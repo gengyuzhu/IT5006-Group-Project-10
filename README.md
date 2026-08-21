@@ -10,7 +10,7 @@ Literature review, exploratory data analysis, and an interactive dashboard over
 | Report (PDF) | [`report/main.pdf`](report/main.pdf) — 5 body pages + references + appendix |
 | Report source (LaTeX) | [`report/`](report/) — upload the whole folder to Overleaf |
 | Notebooks | [`notebooks/*.ipynb`](notebooks/) |
-| Dashboard | [`dashboard/app.py`](dashboard/app.py) — Streamlit, [live](https://gengyuzhu-it5006-group-project-10-dashboardapp-omd4lt.streamlit.app) |
+| Dashboard | **[it5006-group-project-10.streamlit.app](https://it5006-group-project-10.streamlit.app)** — source in [`dashboard/`](dashboard/) |
 | Reusable code | [`src/`](src/) |
 
 ---
@@ -195,16 +195,18 @@ Five linked views, all reading through `src/data_load.py`:
 
 ### Deploying
 
-At [share.streamlit.io](https://share.streamlit.io): connect this repo, branch
-`main`, main file `dashboard/app.py`.
+Live at **[it5006-group-project-10.streamlit.app](https://it5006-group-project-10.streamlit.app)**,
+built from `main` / `dashboard/app.py` on **Python 3.12**.
 
-> **Set the Python version to 3.12 or lower** in *App settings → General*.
-> This matters: `numpy==1.26.4` publishes wheels only up to `cp312`. On Python
-> 3.13+ pip finds no wheel, tries to compile numpy from source, the build dies,
-> and the app hangs on *"Your app is in the oven"* forever with no obvious
-> error. `requirements.txt` carries environment markers that select a
-> wheel-backed numpy on newer interpreters as a fallback, but 3.12 is the
-> version the reported numbers were validated against.
+> **Keep the Python version at 3.12 or lower** (*App settings → General*).
+> `numpy==1.26.4` publishes wheels only up to `cp312`. On Python 3.13+ pip finds
+> no wheel and tries to compile numpy from source; the build dies and the app
+> then hangs on *"Your app is in the oven"* indefinitely, with the real error
+> buried in the build log rather than shown in the app. `requirements.txt`
+> carries environment markers that fall back to a wheel-backed numpy on newer
+> interpreters, but 3.12 is what the reported numbers were validated against —
+> the deployment log confirms it installs the exact pins
+> (`streamlit==1.39.0`, `pandas==2.2.3`, `numpy==1.26.4`, `plotly==5.24.1`).
 
 ## Before submission
 
