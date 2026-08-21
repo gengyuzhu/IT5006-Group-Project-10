@@ -21,7 +21,16 @@ data/processed/
 /nibrs_diagram.pdf
 sample reports (for reference only)/
 
-# --- LaTeX build artefacts (main.pdf is committed deliberately) ------------
+# --- Report -----------------------------------------------------------------
+# Only the compiled PDF and its figures are tracked. The LaTeX sources are kept
+# locally (and on Overleaf) but not in the repository, which is scoped to the
+# analysis code, the notebooks and the finished deliverable.
+report/*.tex
+report/sections/
+report/refs.bib
+report/stats.txt
+
+# LaTeX build artefacts
 report/*.aux
 report/*.bbl
 report/*.blg
@@ -31,9 +40,6 @@ report/*.toc
 report/*.synctex.gz
 report/*.fls
 report/*.fdb_latexmk
-report/b*.log
-report/t*.log
-report/build*.log
 
 # --- OS --------------------------------------------------------------------
 Thumbs.db

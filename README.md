@@ -1,5 +1,8 @@
 # IT5006 Phase 1 — Forecasting Weekly Demand for Broadway Productions
 
+**Group 10** · Pan Pinyou · Li Yudan · Zhu Gengyu
+National University of Singapore · IT5006 Fundamentals of Data Analytics
+
 Literature review, exploratory data analysis, and an interactive dashboard over
 26 years of Broadway weekly box-office data.
 
@@ -8,8 +11,7 @@ Literature review, exploratory data analysis, and an interactive dashboard over
 | Item | Location |
 |---|---|
 | Report (PDF) | [`report/main.pdf`](report/main.pdf) — 5 body pages + references + appendix |
-| Report source (LaTeX) | [`report/`](report/) — upload the whole folder to Overleaf |
-| Notebooks | [`notebooks/*.ipynb`](notebooks/) |
+| Notebooks | [`notebooks/*.ipynb`](notebooks/) — four, executed with outputs |
 | Dashboard | **[it5006-group-project-10.streamlit.app](https://it5006-group-project-10.streamlit.app)** — source in [`dashboard/`](dashboard/) |
 | Reusable code | [`src/`](src/) |
 
@@ -26,16 +28,22 @@ inside the virtual environment**, never the base conda env.
 python -m venv .venv && .venv/Scripts/activate && pip install -r requirements-dev.txt
 ```
 
-Two dependency files, deliberately:
+Two dependency files, and they do **not** overlap — `requirements-dev.txt`
+pulls the runtime set in with `-r requirements.txt` rather than restating it, so
+no package version is written twice:
 
-| File | Contains | Used by |
+| File | Adds | Installed by |
 |---|---|---|
-| `requirements.txt` | streamlit, pandas, numpy, plotly | Streamlit Cloud — only what `dashboard/app.py` imports |
-| `requirements-dev.txt` | the above **plus** scikit-learn, scipy, matplotlib, Jupyter | notebooks, figures, report stats |
+| `requirements.txt` | streamlit, pandas, numpy, plotly | Streamlit Cloud — exactly what `dashboard/app.py` imports |
+| `requirements-dev.txt` | `-r requirements.txt` **+** scikit-learn, scipy, matplotlib, Jupyter | you, for the notebooks and figures |
 
-Keeping the deployed set minimal makes the Cloud build fast and removes most of
-its failure surface; a guard test confirms the dashboard's whole import graph
-runs with the dev-only packages made unimportable.
+The split exists because Streamlit Cloud installs `requirements.txt` and nothing
+else. Merging the two would put the whole analysis stack back into the
+deployment — which is what broke it: a pinned `pyarrow` the project never
+imported aborted the build outright. Four packages instead of ~130 makes the
+build fast and leaves almost nothing that can fail. A guard test confirms the
+dashboard's entire import graph runs with every dev-only package made
+unimportable.
 
 Then, in order:
 
@@ -131,34 +139,35 @@ We expect a tuned Phase 2 classifier in the **low-to-mid 60s**. A result above
 ## Repository layout
 
 ```
-├── data/raw/broadway_clean.csv     read-only source
+├── data/raw/broadway_clean.csv        read-only source
 ├── notebooks/
-│   ├── 01_data_audit               data contract, quality audit, capacity validation
-│   ├── 02_eda_temporal             trend, seasonality, exogenous shocks
-│   ├── 03_eda_entities             shows, theatres, survival curves, correlations
-│   └── 04_candidate_problems       horizon selection, leakage demo, three candidates
+│   ├── 01_data_audit.ipynb            data contract, quality audit, capacity validation
+│   ├── 02_eda_temporal.ipynb          trend, seasonality, exogenous shocks
+│   ├── 03_eda_entities.ipynb          shows, theatres, survival curves, correlations
+│   └── 04_candidate_problems.ipynb    horizon selection, leakage demo, three candidates
 ├── src/
-│   ├── config.py                   seeds, paths, windows, band cuts, plot theme
-│   ├── data_load.py                single data entry point + CLEANING_DECISIONS
-│   ├── features.py                 leakage-annotated feature builders + the guard
-│   ├── viz.py                      shared plot style, vector PDF export
-│   ├── report_stats.py             regenerates every number quoted in the report
-│   └── py_to_nb.py                 .py (# %% cells) → .ipynb
+│   ├── config.py                      seeds, paths, windows, band cuts, plot theme
+│   ├── data_load.py                   single data entry point + CLEANING_DECISIONS
+│   ├── features.py                    leakage-annotated feature builders + the guard
+│   ├── viz.py                         shared plot style, vector PDF export
+│   └── report_stats.py                regenerates every number quoted in the report
 ├── dashboard/
-│   ├── app.py                      Streamlit, five linked views
-│   └── theme.py                    plotly template + CSS design system
-├── .streamlit/config.toml          widget theme matched to theme.py
-├── requirements.txt                dashboard runtime (what Cloud installs)
-├── requirements-dev.txt            + analysis stack for the notebooks
-└── report/                         LaTeX source, refs.bib, figures/
+│   ├── app.py                         Streamlit, five linked views
+│   └── theme.py                       plotly template + CSS design system
+├── .streamlit/config.toml             widget theme matched to theme.py
+├── requirements.txt                   dashboard runtime (what Cloud installs)
+├── requirements-dev.txt               + analysis stack for the notebooks
+└── report/
+    ├── main.pdf                       the submitted report
+    └── figures/                       11 vector PDFs, generated by the notebooks
 ```
 
-Notebooks are authored as `# %%` cell scripts (readable diffs, easy to run) and
-the `.ipynb` deliverables are generated from them:
+All four notebooks are committed **executed, with their outputs inline**, so the
+figures and numbers are visible without running anything. They import the shared
+modules from `src/`, so run them from the `notebooks/` directory.
 
-```bash
-python src/py_to_nb.py notebooks/01_data_audit.py
-```
+The report's LaTeX sources are kept on Overleaf rather than in this repository,
+which is scoped to the analysis code, the notebooks and the finished PDF.
 
 ## Reproducibility
 
@@ -170,16 +179,8 @@ python src/py_to_nb.py notebooks/01_data_audit.py
   notebooks — none is pasted in by hand.
 - `python src/report_stats.py` recomputes every numeric claim in the report;
   diff it against the manuscript before submitting.
-- All 18 references in `refs.bib` were verified against publisher records
-  (DOI, volume, issue, pages).
-
-## Building the report
-
-`report/` compiles on Overleaf as-is. Locally:
-
-```bash
-cd report && pdflatex main && bibtex main && pdflatex main && pdflatex main
-```
+- All 19 bibliography entries were verified against publisher records
+  (DOI, volume, issue, pages) rather than quoted from memory.
 
 ## Dashboard
 
@@ -207,13 +208,6 @@ built from `main` / `dashboard/app.py` on **Python 3.12**.
 > interpreters, but 3.12 is what the reported numbers were validated against —
 > the deployment log confirms it installs the exact pins
 > (`streamlit==1.39.0`, `pandas==2.2.3`, `numpy==1.26.4`, `plotly==5.24.1`).
-
-## Before submission
-
-- [ ] Fill in team names and student IDs on the cover page (`report/main.tex`)
-- [ ] Confirm the academic year and semester on the cover page
-- [ ] Deploy the dashboard and confirm the live URL matches the one in
-      `report/sections/03_links.tex`
 
 ## Data source
 
