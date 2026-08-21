@@ -10,7 +10,7 @@ Literature review, exploratory data analysis, and an interactive dashboard over
 | Report (PDF) | [`report/main.pdf`](report/main.pdf) — 5 body pages + references + appendix |
 | Report source (LaTeX) | [`report/`](report/) — upload the whole folder to Overleaf |
 | Notebooks | [`notebooks/*.ipynb`](notebooks/) |
-| Dashboard | [`dashboard/app.py`](dashboard/app.py) — Streamlit, [live](https://it5006-group-project-10.streamlit.app) |
+| Dashboard | [`dashboard/app.py`](dashboard/app.py) — Streamlit, [live](https://gengyuzhu-it5006-group-project-10-dashboardapp-omd4lt.streamlit.app) |
 | Reusable code | [`src/`](src/) |
 
 ---
@@ -23,8 +23,19 @@ alongside `pandas`/`scipy`/`matplotlib` compiled against numpy 1.x, so
 inside the virtual environment**, never the base conda env.
 
 ```bash
-python -m venv .venv && .venv/Scripts/activate && pip install -r requirements.txt
+python -m venv .venv && .venv/Scripts/activate && pip install -r requirements-dev.txt
 ```
+
+Two dependency files, deliberately:
+
+| File | Contains | Used by |
+|---|---|---|
+| `requirements.txt` | streamlit, pandas, numpy, plotly | Streamlit Cloud — only what `dashboard/app.py` imports |
+| `requirements-dev.txt` | the above **plus** scikit-learn, scipy, matplotlib, Jupyter | notebooks, figures, report stats |
+
+Keeping the deployed set minimal makes the Cloud build fast and removes most of
+its failure surface; a guard test confirms the dashboard's whole import graph
+runs with the dev-only packages made unimportable.
 
 Then, in order:
 
@@ -137,6 +148,8 @@ We expect a tuned Phase 2 classifier in the **low-to-mid 60s**. A result above
 │   ├── app.py                      Streamlit, five linked views
 │   └── theme.py                    plotly template + CSS design system
 ├── .streamlit/config.toml          widget theme matched to theme.py
+├── requirements.txt                dashboard runtime (what Cloud installs)
+├── requirements-dev.txt            + analysis stack for the notebooks
 └── report/                         LaTeX source, refs.bib, figures/
 ```
 
@@ -149,7 +162,8 @@ python src/py_to_nb.py notebooks/01_data_audit.py
 
 ## Reproducibility
 
-- `SEED = 42` everywhere; `requirements.txt` pins exact versions.
+- `SEED = 42` everywhere; both requirements files pin exact versions on
+  Python <= 3.12, the interpreter every reported number was produced on.
 - `data_load.load_raw()` asserts the raw data contract (29,167 × 12, natural key
   uniqueness, all dates Sunday). Downstream numbers are protected by it.
 - Every figure is generated into `report/figures/` as vector PDF by the
@@ -179,9 +193,18 @@ Five linked views, all reading through `src/data_load.py`:
 | **Seasonality** | Week × year heatmap, plus a side-by-side showing month-level aggregation destroying the signal |
 | **Data quality** | Zero-coded missingness over time, the seat-count validation, and the cleaning contract |
 
-Deploy to Streamlit Cloud: connect this repo at
-[share.streamlit.io](https://share.streamlit.io), set the main file to
-`dashboard/app.py`, and the app builds from `requirements.txt`.
+### Deploying
+
+At [share.streamlit.io](https://share.streamlit.io): connect this repo, branch
+`main`, main file `dashboard/app.py`.
+
+> **Set the Python version to 3.12 or lower** in *App settings → General*.
+> This matters: `numpy==1.26.4` publishes wheels only up to `cp312`. On Python
+> 3.13+ pip finds no wheel, tries to compile numpy from source, the build dies,
+> and the app hangs on *"Your app is in the oven"* forever with no obvious
+> error. `requirements.txt` carries environment markers that select a
+> wheel-backed numpy on newer interpreters as a fallback, but 3.12 is the
+> version the reported numbers were validated against.
 
 ## Before submission
 

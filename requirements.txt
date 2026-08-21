@@ -1,21 +1,34 @@
-# IT5006 Phase 1 - pinned environment
-# NOTE: numpy is pinned to 1.x. The base Anaconda install on this machine has
-# numpy 2.2.6 alongside pandas/scipy/matplotlib compiled against numpy 1.x,
-# which makes `import pandas` fail with "numpy.dtype size changed".
-# Always work inside .venv, never the base conda env.
+# Runtime dependencies for the deployed Streamlit dashboard.
+#
+# Deliberately minimal: this is the file Streamlit Community Cloud installs, and
+# every package here is one that dashboard/app.py actually imports. The heavier
+# analysis stack (scikit-learn, matplotlib, Jupyter) lives in
+# requirements-dev.txt so the deployment neither waits for it nor fails on it.
+#
+#     pip install -r requirements-dev.txt      # everything, for the notebooks
+#     pip install -r requirements.txt          # just the dashboard
+#
+# WHY THE ENVIRONMENT MARKERS
+# ---------------------------
+# Every number in report/main.pdf was produced on Python 3.10 with the exact
+# versions pinned below, so those pins hold for Python <= 3.12.
+#
+# Streamlit Cloud may build on a newer interpreter. numpy 1.26.4 ships wheels
+# only up to cp312, so on Python 3.13+ pip finds no wheel, falls back to
+# compiling from source, and the build fails - the app then hangs on "Your app
+# is in the oven" indefinitely. The markers let pip select a wheel-backed
+# version on newer interpreters while leaving the validated pins untouched.
+#
+# Preferred deployment target: Python 3.12 (exact pins, identical to local).
 
-numpy==1.26.4
-pandas==2.2.3
-scipy==1.14.1
-scikit-learn==1.5.2
-statsmodels==0.14.4
+streamlit==1.39.0      ; python_version < "3.13"
+streamlit>=1.39.0,<2   ; python_version >= "3.13"
 
-matplotlib==3.9.2
-seaborn==0.13.2
-plotly==5.24.1
+pandas==2.2.3          ; python_version < "3.13"
+pandas>=2.2.3,<3       ; python_version >= "3.13"
 
-streamlit==1.39.0
+numpy==1.26.4          ; python_version < "3.13"
+numpy>=2.1,<3          ; python_version >= "3.13"
 
-pyarrow==17.0.0
-jupyter==1.1.1
-nbconvert==7.16.4
+plotly==5.24.1         ; python_version < "3.13"
+plotly>=5.24.1,<7      ; python_version >= "3.13"

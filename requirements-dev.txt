@@ -1,0 +1,27 @@
+# Full analysis environment: the dashboard runtime plus everything the
+# notebooks need to reproduce the figures and the numbers in the report.
+#
+#     python -m venv .venv && .venv/Scripts/activate
+#     pip install -r requirements-dev.txt
+#
+# The base Anaconda install on the original machine is broken (numpy 2.2.6
+# alongside pandas/scipy/matplotlib built for numpy 1.x, so `import pandas`
+# raises "numpy.dtype size changed"). Always work inside .venv.
+
+-r requirements.txt
+
+scikit-learn==1.5.2        ; python_version < "3.13"
+scikit-learn>=1.5.2,<2     ; python_version >= "3.13"
+
+# Pulled in by scikit-learn; pinned explicitly because it affects the numerics
+# behind every model result quoted in the report.
+scipy==1.14.1              ; python_version < "3.13"
+scipy>=1.14.1,<2           ; python_version >= "3.13"
+
+matplotlib==3.9.2          ; python_version < "3.13"
+matplotlib>=3.9.2,<4       ; python_version >= "3.13"
+
+# Notebook generation and execution (src/py_to_nb.py, nbconvert --execute).
+nbformat==5.10.4
+jupyter==1.1.1
+nbconvert==7.16.4
