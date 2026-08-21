@@ -1,0 +1,403 @@
+% ---------------------------------------------------------------------------
+% IT5006 Fundamentals of Data Analytics
+% Group Project Milestone 1: Literature Review and Exploratory Data Analysis
+%
+% Compiles with pdfLaTeX on Overleaf. Build order: pdflatex -> bibtex -> pdflatex x2
+% ---------------------------------------------------------------------------
+\documentclass[11pt,a4paper]{article}
+
+\usepackage{lmodern}      % scalable Type 1 font; required for microtype expansion
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{amsmath}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta}
+\usepackage{microtype}
+\usepackage{xcolor}
+\usepackage[numbers,sort&compress]{natbib}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{figures/}}
+% --- Citation marks -------------------------------------------------------
+% Render the bracketed reference number one step smaller than the body text so
+% it reads as a reference mark rather than competing with the prose.
+\makeatletter
+\renewcommand\NAT@open{\bgroup\footnotesize[}
+\renewcommand\NAT@close{]\egroup}
+\makeatother
+
+% --- Footnotes ------------------------------------------------------------
+% Lettered markers keep explanatory notes visually distinct from the numeric
+% citation marks, and a full-width rule separates them from the body.
+\renewcommand{\thefootnote}{\alph{footnote}}
+\renewcommand{\footnoterule}{%
+  \kern-3pt\hrule width \textwidth height 0.4pt\kern 4pt}
+\setlength{\footnotesep}{0.62em}
+\setlength{\skip\footins}{12pt plus 3pt minus 2pt}
+% Note text sits a step below the citation marks, so the two never compete.
+\makeatletter
+\long\def\@makefntext#1{%
+  \parindent 1em\noindent\hb@xt@1.6em{\hss\@makefnmark}\scriptsize #1}
+\makeatother
+
+% Tighter heading spacing: the default skips waste roughly a page across a
+% document with this many subsections.
+\usepackage{titlesec}
+\titlespacing*{\section}{0pt}{1.5ex plus .3ex minus .2ex}{0.9ex}
+\titlespacing*{\subsection}{0pt}{1.2ex plus .2ex minus .2ex}{0.5ex}
+\titlespacing*{\paragraph}{0pt}{1.0ex plus .2ex}{1em}
+\titleformat{\section}{\normalfont\large\bfseries}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\normalfont\normalsize\bfseries}{\thesubsection}{0.6em}{}
+
+\usepackage[inline]{enumitem}
+\setlist[enumerate]{topsep=3pt, itemsep=1.5pt, parsep=0pt, partopsep=0pt, leftmargin=1.5em}
+\setlist[itemize]{topsep=3pt, itemsep=1.5pt, parsep=0pt, partopsep=0pt, leftmargin=1.4em}
+
+\captionsetup{font=small,labelfont=bf,skip=5pt}
+\setlength{\parskip}{0.10em}
+% Tighten float separation so the body respects the 4-5 page limit.
+\setlength{\textfloatsep}{10pt plus 2pt minus 2pt}
+\setlength{\intextsep}{10pt plus 2pt minus 2pt}
+\bibliographystyle{plainnat}
+
+% Compact table column for the audit tables
+\newcommand{\code}[1]{\texttt{\small #1}}
+
+% ---------------------------------------------------------------------------
+\begin{document}
+
+% ============================== COVER PAGE =================================
+\begin{titlepage}
+\centering
+\vspace*{3.5cm}
+
+{\Large\bfseries Group Project Milestone 1:\par}
+\vspace{0.6em}
+{\Large\bfseries Literature Review and Exploratory Data Analysis\par}
+
+\vspace{1.2cm}
+{\large Forecasting Weekly Demand for Broadway Productions\par}
+\vspace{0.4em}
+{\normalsize A transactional analytics study of 26 years of box-office data\par}
+
+\vspace{3.5cm}
+
+% ---------------------------------------------------------------------------
+% TODO before submission: replace with the real team roster.
+% ---------------------------------------------------------------------------
+{\normalsize
+\begin{tabular}{ll}
+Group & \textit{Group \_\_} \\[2pt]
+Member 1 & \textit{Name (Student ID)} \\
+Member 2 & \textit{Name (Student ID)} \\
+Member 3 & \textit{Name (Student ID)} \\
+Member 4 & \textit{Name (Student ID)} \\
+Member 5 & \textit{Name (Student ID)} \\
+\end{tabular}\par}
+
+\vfill
+
+{\large National University of Singapore\par}
+\vspace{0.4em}
+{\large IT5006 Fundamentals of Data Analytics\par}
+\vspace{0.4em}
+{\large AY2026/2027 Semester 1\par}
+
+\vspace{1.2cm}
+\end{titlepage}
+
+% ============================== BODY =======================================
+\input{sections/01_litreview}
+\input{sections/02_eda}
+\input{sections/03_links}
+
+% ============================== REFERENCES =================================
+\newpage
+\bibliography{refs}
+
+% ============================== APPENDIX ===================================
+\newpage
+\appendix
+
+\section{Data Model, Audit and Dictionary}
+\label{app:dictionary}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+  font=\small,
+  box/.style={draw, rounded corners=2pt, minimum height=10mm, minimum width=26mm,
+              inner xsep=5pt, inner ysep=4pt, align=center},
+  attr/.style={font=\scriptsize, anchor=west},
+  link/.style={draw, -{Latex[length=4pt]}, thin}
+]
+\node[box] (theatre) at (0,3.35)
+  {\textbf{THEATRE}\\[-2pt]\scriptsize $n=56$\\[-2pt]\scriptsize \textit{seats (derived)}};
+\node[box] (show) at (0,1.65)
+  {\textbf{SHOW}\\[-2pt]\scriptsize $n=820$\\[-2pt]\scriptsize \textit{Show.Type}};
+\node[box] (prod) at (4.1,2.50)
+  {\textbf{PRODUCTION}\\[-2pt]\scriptsize $n=942$\\[-2pt]\scriptsize \textit{run\_block}};
+\node[box] (week) at (8.6,2.50)
+  {\textbf{WEEK RECORD}\\[-2pt]\scriptsize $n=29{,}167$\\[-2pt]\scriptsize \textit{grain: week $\times$ show $\times$ theatre}};
+
+\draw[link] (theatre.east) -- (prod.north west);
+\draw[link] (show.east)    -- (prod.south west);
+\draw[link] (prod.east)    -- node[above, font=\scriptsize] {1\,:\,N} (week.west);
+
+\node[attr, anchor=north west, align=left] (attrs) at (5.55,1.55)
+  {Date.Full \textit{(week ending Sunday)} \\
+   Statistics.Attendance \\
+   Statistics.Capacity \textit{(\% of seats sold)} \\
+   Statistics.Gross \textit{(nominal USD)} \\
+   Statistics.Gross Potential \textit{(\% of maximum)} \\
+   Statistics.Performances \textit{(mode 8)}};
+\draw[thin] (5.45,1.50) -- (5.45,-0.35);
+\draw[thin, dashed] (week.south) -- (8.6,1.72) -- (5.45,1.72);
+\end{tikzpicture}
+\caption{Entity structure recovered from the flat file. \code{PRODUCTION} is the
+decision-making unit and the grouping unit for train/test splits; seat counts
+are derived rather than supplied.}
+\label{fig:datamodel}
+\end{figure}
+
+\begin{table}[htbp]
+\centering
+\caption{Data quality audit and cleaning decisions, implemented as
+\code{CLEANING\_DECISIONS} in the data-loading module.}
+\label{tab:quality}
+\small
+\begin{tabular}{@{}p{2.9cm}p{4.6cm}p{6.4cm}@{}}
+\toprule
+\textbf{Issue} & \textbf{Evidence} & \textbf{Decision} \\
+\midrule
+Coverage gaps &
+29 weeks missing in 1990--91 and 42 in 1991--92; 75 missing weeks in total &
+Restrict analysis to 1996 onward (28{,}479 rows); retain earlier years only as
+a quality exhibit \\[3pt]
+
+\code{Performances} $=0$ &
+2{,}309 rows (7.9\%) report zero performances alongside positive attendance,
+which is impossible &
+Recode to \code{NaN}, flag \code{perf\_missing}; never impute \\[3pt]
+
+\code{Gross Potential} $=0$ &
+1{,}918 rows (6.6\%); 96\% of all 1996 rows are affected, and the defect
+disappears entirely after 1997 &
+Recode to \code{NaN}, flag \code{gp\_missing} \\[3pt]
+
+\code{Capacity} censored &
+Capped at 100\%, yet 1{,}433 rows show gross potential above 100\% from
+premium pricing &
+Treat 100 as right-censored; state the censoring wherever capacity is modelled \\[3pt]
+
+Nominal currency &
+Median ticket price rises 109\% between 1996 and 2015 &
+Model scale-free measures (capacity \%, gross potential \%); carry \code{year}
+as a feature; no external deflator \\[3pt]
+
+Title-case artefacts &
+42 of 820 titles contain \code{'S} from word-wise capitalisation &
+Normalise to \code{'s}; retain the original in \code{show\_name\_raw} \\[3pt]
+
+Multi-theatre titles &
+27 titles run in more than one theatre &
+Key productions on (show, theatre, run\_block) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Horizon selection for Candidate 1. Persistence decays faster than the
+model, so the model's contribution grows with the horizon. Test period 2015-01
+to 2016-08; the majority-class baseline is 0.35 at every horizon. Bold marks the
+better of baseline and model.}
+\label{tab:horizon}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+& \multicolumn{2}{c}{\textbf{Accuracy (3 bands)}} & \multicolumn{2}{c}{\textbf{MAE (capacity \%)}} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+\textbf{Horizon} & Persistence & Logistic reg. & Persistence & Linear reg. \\
+\midrule
+1 week  & \textbf{0.728} & 0.724 & 5.52 & \textbf{5.33} \\
+2 weeks & 0.634 & \textbf{0.656} & 7.21 & \textbf{6.52} \\
+4 weeks & 0.607 & \textbf{0.638} & 8.01 & \textbf{7.36} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Candidate problems against the brief's scoping checklist.}
+\label{tab:checklist}
+\small
+\begin{tabular}{@{}p{2.7cm}p{4.0cm}p{3.7cm}p{3.4cm}@{}}
+\toprule
+\textbf{Criterion} & \textbf{C1 demand (4 weeks)} & \textbf{C2 closure risk} & \textbf{C3 opening gross} \\
+\midrule
+Derivable target & Yes, a column & Yes, from last observed week & Yes, weeks 1--4 \\
+No leakage & Yes, lags start at $t{-}4$ & Yes, run state and lags & Yes, but no lags exist \\
+Sufficient signal & 0.638 vs 0.315 / 0.607 & PR-AUC 0.698 vs 0.204 & $R^2 = 0.29$ (weak) \\
+Manageable imbalance & Balanced by construction & 22\% positive; weights, PR-AUC & N/A (regression) \\
+Clear stakeholder & Theatre GM & Producer & Marketing \\
+\midrule
+\textbf{Verdict} & \textbf{Primary} & \textbf{Secondary} & Deprioritised \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[htbp]
+\centering
+\caption{Data dictionary for \code{broadway\_clean.csv}. ``Coded missing''
+records values that represent absent data rather than genuine measurements.}
+\label{tab:dictionary}
+\small
+\begin{tabular}{@{}llp{6.1cm}l@{}}
+\toprule
+\textbf{Column} & \textbf{Type} & \textbf{Description} & \textbf{Coded missing} \\
+\midrule
+\code{Date.Full}   & date & Week-ending date; always a Sunday & --- \\
+\code{Date.Day}    & int  & Day component of \code{Date.Full} & --- \\
+\code{Date.Month}  & int  & Month component (1--12) & --- \\
+\code{Date.Year}   & int  & Year component (1990--2016) & --- \\
+\code{Show.Name}   & text & Show title, word-wise capitalised (820 distinct) & --- \\
+\code{Show.Theatre}& text & Venue name (56 distinct) & --- \\
+\code{Show.Type}   & cat  & Musical / Play / Special & --- \\
+\code{Statistics.} & int  & Total tickets sold across all performances that & --- \\
+\quad\code{Attendance} &  & week & \\
+\code{Statistics.} & int  & \textbf{Percentage} of available seats sold, 10--100. & 100 = censored \\
+\quad\code{Capacity} &    & Not a seat count; see Equation~\ref{eq:identity} & \\
+\code{Statistics.} & int  & Weekly box-office revenue in \textbf{nominal} USD, & --- \\
+\quad\code{Gross}  &      & not inflation-adjusted & \\
+\code{Statistics.} & int  & Percentage of maximum achievable gross; exceeds & 1{,}918 zeros \\
+\quad\code{Gross Potential} & & 100 under premium pricing (1{,}433 rows) & \\
+\code{Statistics.} & int  & Performances given that week; mode 8, the standard & 2{,}309 zeros \\
+\quad\code{Performances} &  & Broadway schedule & \\
+\midrule
+\multicolumn{4}{@{}l@{}}{\textit{Derived in \code{src/}, not present in the raw file:}} \\
+\code{theatre\_seats} & int & Seat count recovered via Equation~\ref{eq:identity} & --- \\
+\code{production\_id} & text & (show, theatre, run\_block) --- the decision unit & --- \\
+\code{capacity\_lag}$k$ & float & Capacity $k$ weeks earlier, same production & gaps in run \\
+\code{target\_band} & cat & Low / Mid / High, at training-set terciles & --- \\
+\code{target\_closes\_soon} & bin & Closes within 8 weeks & 208 censored \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\newpage
+\section{Figures}
+\label{app:figures}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig01_data_quality.pdf}
+  \caption{Data quality. (a) Productions reported per week; shaded bands are the
+  four coverage gaps, totalling 75 missing weeks. (b) Share of rows affected by
+  zero-coded missingness and by censoring, per year. Both defects are era
+  effects rather than show effects, which is why the analysis window starts in
+  1996.}
+  \label{fig:quality}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig02_market_events.pdf}
+  \caption{Total Broadway weekly gross and the number of productions reporting,
+  1990--2016, with the three exogenous shocks marked. The stagehands' strike is
+  visible in both panels; the 9/11 collapse is a revenue effect without a
+  corresponding fall in the number of productions.}
+  \label{fig:market}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig04_distributions.pdf}
+  \caption{Raw distributions before cleaning. The red line marks the spike at
+  zero in \code{Performances} and \code{Gross Potential}: these are missing
+  values encoded as zero, not genuine observations.}
+  \label{fig:distributions}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig05_capacity_validation.pdf}
+  \caption{Validating the meaning of \code{Statistics.Capacity}. Boxplots show
+  the seat count implied by
+  $\text{attendance}/\text{performances}\,/\,(\text{capacity}/100)$ for each
+  theatre; diamonds are published seat counts. The implied values are tight
+  within a theatre and match the published figures to a median error of
+  1.7\%, establishing that the column is a percentage.}
+  \label{fig:validation}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig06_seasonality.pdf}
+  \caption{Median capacity utilisation by ISO week and year. The holiday band at
+  weeks 52--53 and the September trough near week 36 persist across all
+  twenty-one seasons.}
+  \label{fig:seasonality}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig07_show_types.pdf}
+  \caption{(a) Composition of weekly listings by show type. (b) Distribution of
+  capacity utilisation by type. Musicals dominate the panel and sustain higher
+  utilisation than plays.}
+  \label{fig:types}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig08_theatres.pdf}
+  \caption{Theatre profile: recovered seat count against median capacity
+  utilisation, sized by cumulative gross and coloured by the number of distinct
+  productions hosted. Larger houses are not systematically fuller houses.}
+  \label{fig:theatres}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig09_survival.pdf}
+  \caption{Kaplan--Meier survival curves for productions by show type, with
+  right-censored runs handled explicitly. Median survival is 20 weeks for
+  musicals and 13 weeks for plays.}
+  \label{fig:survival}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig10_relationships.pdf}
+  \caption{(a) Same-week correlations. (b) Capacity against gross potential.
+  Capacity is censored at 100\% whereas gross potential is not, so premium
+  pricing pushes 1{,}433 observations above the 100\% line.}
+  \label{fig:relationships}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig11_price_vs_demand.pdf}
+  \caption{Median nominal ticket price against median capacity utilisation.
+  Price rises 109\% between 1996 and 2015 while utilisation moves three
+  percentage points: growth in nominal gross is overwhelmingly a price effect.}
+  \label{fig:price}
+\end{figure}
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics[width=\linewidth]{fig12_candidates.pdf}
+  \caption{Candidate problem evidence. (a) Accuracy against forecast horizon:
+  persistence decays faster than the model, so the model's contribution grows
+  with the horizon. (b) Closure risk by stage of run. (c) The demand bands,
+  defined by training-set terciles.}
+  \label{fig:candidates}
+\end{figure}
+
+\end{document}

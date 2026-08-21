@@ -1,0 +1,15 @@
+# Streamlit theme, matched to dashboard/theme.py so the widget chrome
+# (sliders, chips, focus rings) uses the same palette as the charts.
+[theme]
+base = "light"
+primaryColor = "#2F6F9F"
+backgroundColor = "#F5F7F9"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1B2733"
+font = "sans serif"
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false

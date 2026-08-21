@@ -1,0 +1,213 @@
+\section{Exploratory Data Analysis}
+
+\subsection{Dataset overview and data model}
+
+\code{broadway\_clean.csv} contains 29{,}167 rows and 12 columns at a grain of
+one row per \emph{week $\times$ show $\times$ theatre}.\footnote{%
+\textbf{On tables and joins.} The brief asks for the tables used and joins
+performed. This dataset is a \emph{single denormalised file}: no joins are
+required and none were performed. We meet the underlying obligation ---
+documenting the data model --- by recovering the entity structure the flat file
+implies (Figure~\ref{fig:datamodel}).}
+The triple (\code{Date.Full}, \code{Show.Name}, \code{Show.Theatre}) is a
+verified natural key with no duplicates, and every observation is a week ending
+on a Sunday, the Broadway League's reporting convention. The file spans 1990-08-26 to 2016-08-14
+with 1{,}281 distinct week-endings, 820 shows and 56 theatres, and a median of
+25 productions reporting per week.
+
+Although denormalised, the data encodes a three-level hierarchy
+(Figure~\ref{fig:datamodel}): \textbf{theatres} (fixed seat count),
+\textbf{shows} (the creative work), and \textbf{productions} --- one show's run
+in one theatre, the unit at which commercial decisions are taken. That
+distinction matters, since 27 titles appear in more than one theatre and some
+return after a break, so we key a production on
+(\code{show}, \code{theatre}, \code{run\_block}), incrementing \code{run\_block}
+after any absence beyond four weeks. This yields 942 productions overall, 902
+inside the analysis window; Table~\ref{tab:dictionary} is the full data
+dictionary.
+
+\subsection{Data quality audit}
+
+The file has no nulls, no duplicate rows and no formatting faults. That apparent
+cleanliness is misleading: missingness has been encoded as zero, and two further
+defects are structural. Table~\ref{tab:quality} records every issue, its
+evidence and our decision; the decisions live in \code{src/data\_load.py}, so
+code and table cannot drift apart. In summary: 2{,}309 rows (7.9\%) report zero
+performances alongside positive attendance, which is impossible; 1{,}918 rows
+(6.6\%) code gross potential as zero, including 96\% of all 1996 rows; capacity
+is censored at 100\% while 1{,}433 rows show gross potential above it under
+premium pricing; and 75 weeks are missing outright, almost all before 1993.
+
+Critically, the zero-coded values cluster by \emph{year} rather than by show
+(Figure~\ref{fig:quality}b), identifying them as reporting artefacts of
+particular eras. Together with the thin early coverage --- a handful of
+productions per week before 1995 against roughly 25 afterwards --- this is what
+drives our decision to begin the analysis in 1996, leaving 28{,}479 rows.
+
+\paragraph{Recovering an undocumented column.}
+\code{Statistics.Capacity} is named as a seat count but ranges only from 10 to
+100. If it is instead the percentage of seats sold, then
+\begin{equation}
+\text{seats} \;=\; \frac{\text{attendance}}{\text{performances}}
+\Big/ \frac{\text{capacity}}{100}
+\label{eq:identity}
+\end{equation}
+must recover a constant per theatre. It does: implied values are tight within
+each venue and match published seat counts to a median error of 1.7\%, with the
+Lunt-Fontanne recovering exactly its published 1{,}509 seats
+(Figure~\ref{fig:validation}). This settles the column's meaning and supplies a
+legitimate static feature in place of a 56-level categorical.
+
+\subsection{Temporal patterns}
+
+Total weekly gross grows roughly four-fold across the series
+(Figure~\ref{fig:market}), but almost none of that is demand. Between 1996 and
+2015 the median ticket price rises from \$44.60 to \$93.10 (+109\%) while median
+capacity utilisation moves only from 82\% to 85\% (Figure~\ref{fig:price}). A
+model trained on dollar levels would spend most of its capacity learning the
+price trend --- hence our scale-free targets.
+
+Demand is strongly seasonal, but \emph{only at week resolution}. ISO weeks
+52--53 reach a median of 90\% capacity against 73\% in weeks 36 and 44, a
+17-point swing (Figure~\ref{fig:seasonality}). Aggregated to months that
+contrast is exactly zero: December's median equals September's, because the
+holiday peak is a two-week phenomenon cancelled by the slow first three weeks of
+December. Calendar features must therefore be built at week resolution, and ours
+are.
+
+Two weeks are dominated by exogenous shocks: in the week ending 16 September
+2001 market gross fell from \$7.48m to \$3.47m ($-54\%$), and during the
+November 2007 stagehands' strike\footnote{%
+\textbf{Note.} A labour dispute between the stagehands' union and the League of
+American Theatres and Producers closed most Broadway houses for nineteen days
+in November 2007. Only the handful of productions outside the affected
+contracts continued to play, which is why the count of reporting productions
+--- not merely their revenue --- collapses in Figure~\ref{fig:market}b.}
+the productions able to play fell from 33 to 8 while gross collapsed from
+\$17.1m to \$4.6m. Neither is predictable from
+anything in this dataset. We retain and flag both rather than deleting
+inconvenient rows, and treat them as evidence that a real share of the variance
+here is irreducible.
+
+\subsection{Shows, theatres and lifecycles}
+
+Of the brief's three distribution analyses, two map onto this data: the
+\emph{product} is the show, the \emph{seller} is the theatre. The third cannot
+be done --- the file records aggregate weekly attendance, never an individual
+buyer --- so no customer-level problem is scopeable in Phase 2.
+
+Show types are heavily imbalanced --- 71.1\% musicals, 27.8\% plays, 1.1\%
+\code{Special} (Figure~\ref{fig:types}) --- so a classifier that always answers
+``Musical'' scores 71\% while being useless, illustrating the metric problem of
+Section~1.5. Recovered seat counts span roughly 500 to 1{,}900 and are close to
+independent of utilisation (Figure~\ref{fig:theatres}), so both carry
+information.
+
+Run length is the most skewed quantity in the data: median 15 weeks, 90th
+percentile 68, maximum 994 (\emph{The Phantom of the Opera} at the Majestic).
+Twenty-four productions were still running when the data ends and are therefore
+right-censored. Kaplan--Meier estimates \citep{kaplan1958nonparametric} handling
+that censoring give median survival of 20 weeks for musicals against 13 for
+plays (Figure~\ref{fig:survival}), reproducing the musical-longevity effect of
+\citet{simonoff2016survival}.
+
+\subsection{Relationships and the leakage they imply}
+
+Capacity is not an independent measurement but an identity over attendance,
+performances and seat count (Equation~\ref{eq:identity}). Inverting it
+reconstructs capacity from same-week columns to a median absolute error of
+\textbf{0.48 percentage points}, so a model given same-week attendance or gross
+is not forecasting demand --- it is reading the answer. This is the dominant
+leakage risk here \citep{kaufman2012leakage}, and we enforce it in code: a guard
+rejects any feature list containing a same-week outcome column.
+
+\subsection{Candidate problem exploration}
+\label{sec:candidates}
+
+We examined three candidates. All probes use plain logistic or linear regression
+inside a \code{scikit-learn} pipeline, deliberately untuned, on a chronological
+split (train $\le$ 2013, validation 2014, test 2015 onward) that also scores the
+90 test productions never seen in training.\footnote{%
+\textbf{Note on splitting.} The brief recommends stratified splits for
+imbalanced classification. Chronology takes precedence here: a stratified
+random split would train on 2016 and test on 2004, and would break the
+production-grouping constraint. Our three-band target is balanced by
+construction, so stratification buys little; for the imbalanced Candidate 2
+target we use class weights and time-ordered folds instead.}
+A random split would be badly optimistic: \emph{Phantom} alone contributes 994
+rows, so splitting by row grades the model on interpolating a run it has
+memorised \citep{bergmeir2012cv}. This is the Broadway analogue of the brief's
+\code{customer\_id} warning --- the unit that must not straddle the split is the
+production.
+
+\paragraph{Candidate 1 --- demand for a running production (primary).}
+One question framed both ways: regression on capacity utilisation, and
+classification into three bands at training-set terciles (\emph{Low} $<73\%$,
+\emph{Mid}, \emph{High} $\ge 89\%$). The stakeholder is a theatre general
+manager setting staffing, discounting and TKTS allocation.\footnote{%
+\textbf{Note.} TKTS is the Times Square discount booth run by the Theatre
+Development Fund, where producers release unsold seats at a reduced price. How
+many to release, and how far ahead, is precisely the decision a demand forecast
+supports --- and it is committed weeks in advance, not on the day.}
+
+The horizon is a scoping decision, made with evidence
+(Table~\ref{tab:horizon}). Capacity is highly persistent --- lag-1
+autocorrelation 0.84 --- so one week ahead a naive ``same as last week'' rule
+scores 0.728 and the model cannot beat it; but a one-week forecast is also
+useless, since marketing commitments cannot be changed at that notice. At four
+weeks persistence has decayed to 0.607 while the model holds 0.638, and the
+regression cuts MAE by 8.1\%. We therefore scope Candidate 1 at a
+\textbf{four-week horizon}, where the forecast is both actionable and
+non-trivial.
+
+There the classifier reaches \textbf{0.638} accuracy against a 0.315 majority
+and 0.607 persistence baseline, with balanced accuracy 0.637 and 0.651 on unseen
+productions; the regression reaches MAE 7.36 and $R^2$ 0.546 against 8.01 and
+0.399. Errors concentrate in the \emph{Mid} band --- the expected artefact of
+cutting a continuous quantity at tercile boundaries, not a modelling failure.
+
+The guard's value is measurable: adding same-week attendance lifts accuracy from
+0.638 to 0.875, and adding performances too to 0.902. Those are not
+achievements; they are what this dataset's failure mode looks like.
+
+\paragraph{Candidate 2 --- closure risk within eight weeks (secondary).}
+The positive rate is 22.1\%, and 208 rows are right-censored because the data
+ends before a closure could be observed; those are labelled missing rather than
+defaulted to ``no''. With balanced class weights the model attains PR-AUC 0.698
+against a no-skill floor of 0.204, ROC-AUC 0.887 and recall 0.806 on the
+minority class. Its accuracy of 0.813 barely beats the 0.796 from always
+predicting ``stays open'' --- a rule catching none of the closures it exists to
+find, which is why PR-AUC is the honest summary \citep{saito2015prplot}. This
+candidate contributes the imbalanced, censored target Candidate 1 lacks.
+
+\paragraph{Candidate 3 --- opening-month gross (deprioritised).}
+Predicting gross in a production's first four weeks explains only 29\% of the
+variance in log gross, essentially all of it theatre size and seasonality.
+Without lags little remains, and the variables the literature calls decisive ---
+advance sales, casting, marketing spend, reviews \citep{reddy1998broadway} ---
+are absent here. We record the boundary rather than force a weak model;
+Table~\ref{tab:checklist} scores all three against the brief's checklist.
+
+\subsection{Key insights}
+
+\begin{enumerate}\itemsep1pt
+\item A file with zero nulls is not a clean file: 7.9\% of \code{Performances}
+and 6.6\% of \code{Gross Potential} are missing data encoded as zero, clustered
+by reporting era.
+\item \code{Statistics.Capacity} is an undocumented percentage, recoverable from
+the data itself to within 1.7\% of published seat counts.
+\item Nominal revenue growth is a price effect: ticket prices rise 109\% from
+1996 to 2015 while utilisation moves three points.
+\item Seasonality exists only at week resolution; monthly aggregation destroys
+it entirely.
+\item Capacity is reconstructible from same-week columns to 0.48 percentage
+points, making leakage the central risk and motivating a guard enforced in code.
+\item Forecast difficulty is a design choice: at one week persistence solves the
+problem, at four weeks it is genuinely open --- and four weeks is when the
+decision is made.
+\end{enumerate}
+
+We expect a tuned Candidate 1 classifier to reach the low-to-mid 60s in
+accuracy --- where the ceiling honestly sits, given the drivers the literature
+identifies are unobserved here. A result above 90\% would indicate leakage, not
+skill.

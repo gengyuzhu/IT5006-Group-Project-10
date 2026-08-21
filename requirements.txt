@@ -1,0 +1,21 @@
+# IT5006 Phase 1 - pinned environment
+# NOTE: numpy is pinned to 1.x. The base Anaconda install on this machine has
+# numpy 2.2.6 alongside pandas/scipy/matplotlib compiled against numpy 1.x,
+# which makes `import pandas` fail with "numpy.dtype size changed".
+# Always work inside .venv, never the base conda env.
+
+numpy==1.26.4
+pandas==2.2.3
+scipy==1.14.1
+scikit-learn==1.5.2
+statsmodels==0.14.4
+
+matplotlib==3.9.2
+seaborn==0.13.2
+plotly==5.24.1
+
+streamlit==1.39.0
+
+pyarrow==17.0.0
+jupyter==1.1.1
+nbconvert==7.16.4

@@ -1,0 +1,123 @@
+\section{Literature Review}
+
+\subsection{Scope and domain framing}
+
+This project analyses \emph{Broadway weekly grosses}: 29{,}167 weekly
+box-office records covering 820 shows across 56 Manhattan theatres between
+August 1990 and August 2016 \citep{corgis2016broadway}.\footnote{%
+\textbf{Note on the data source.} The brief's Dataset section is written around
+the Olist e-commerce tables, but the file distributed via Canvas is
+\code{broadway\_clean.csv}. We follow its instruction to ``use this exact copy
+rather than downloading it yourself from Kaggle or elsewhere'', which exists so
+results stay comparable across teams. \emph{No external data was obtained}: the
+Canvas file is the only source, and every target and feature here is derivable
+from it alone.}
+The project brief is written around e-commerce analytics, and the dataset
+assigned to this group sits in an adjacent domain: live entertainment. We treat the brief's requirements as
+domain-general, because the analytical structure is the same in both settings.
+Both produce a stream of transactional records at a fixed reporting grain; both
+raise questions of demand forecasting, revenue management and product-lifecycle
+risk; and both are exposed to the same two methodological hazards the brief
+emphasises, namely target leakage from post-outcome columns and misleading
+accuracy on imbalanced targets. Where the brief gives an e-commerce example we
+state the Broadway equivalent explicitly. The brief's warning about
+\code{customer\_id} versus \code{customer\_unique\_id}, for instance, maps onto
+the distinction between a weekly row and a \emph{production}: a long-running
+show contributes hundreds of rows, so the grouping unit for any split must be
+the production, not the row.
+
+\subsection{Demand and success factors for cultural products}
+
+The economics of Broadway has an established quantitative literature, and it is
+unusually relevant here because it studies the same institution that generated
+our data. \citet{reddy1998broadway} model show success as a function of critical
+reviews, previews, advertising, ticket prices, show type and the timing of the
+opening, and find that newspaper critics exert a large and asymmetric influence.
+\citet{simonoff2003broadway} reframe success as \emph{longevity} and fit Cox
+proportional-hazards models \citep{cox1972regression} to show survival, finding
+that show type, revival status and first-week attendance are predictive, while a
+Tony nomination matters far less than a Tony win. \citet{simonoff2016survival}
+extend this with a three-way comparison of logistic regression, proportional
+hazards and censored linear regression on the same underlying question,
+confirming persistent positive effects of attendance and awards and showing that
+musicals outlast comparable non-musicals.
+
+Two lessons carry into our scoping. First, the strongest predictors in this
+literature --- reviews, awards, advertising, casting --- are \emph{not present}
+in our dataset, which holds only weekly box-office aggregates; any performance
+ceiling we report must be read against that limitation. Second, survival framing
+with explicit censoring is the established treatment for run length, rather than
+naive regression on observed duration. The wider literature agrees:
+\citet{sharda2006boxoffice} treat motion-picture box office as classification
+over discretised revenue bands rather than point regression, because the
+conditional distribution is wide and heavy-tailed, making a band prediction both
+more attainable and more actionable.
+
+\subsection{Modelling approaches for tabular panel data}
+
+For tabular data of this size the practical model space is well characterised.
+Regularised linear and logistic models remain the natural baseline: cheap,
+interpretable, and revealing of distribution shift. Tree ensembles are the usual
+step up --- \citet{breiman2001rf} bag decorrelated trees to cut variance, while
+gradient boosting \citep{friedman2001gbm} and its scalable implementations
+\citep{chen2016xgboost} fit residuals stagewise with shrinkage and explicit
+complexity penalties. \citet{grinsztajn2022tabular} benchmark both families
+against modern deep architectures across 45 datasets and find tree-based methods
+still state-of-the-art at our scale, attributing the gap to inductive biases
+better matched to irregular tabular targets. We therefore plan a deliberately
+small model budget --- linear/logistic baselines, a regularised variant, one
+tree ensemble --- reused across both framings, following the brief's guidance to
+justify complexity with evidence rather than enumerate algorithms.
+
+\subsection{Feature engineering for transactional panel data}
+
+Panel data of this shape rewards a standard vocabulary: lagged target values,
+rolling means and dispersions, trend differences, and calendar encodings
+\citep{hyndman2021fpp}. Two refinements matter here. High-cardinality
+categoricals such as our 56 theatres are poorly served by one-hot encoding;
+target encoding \citep{miccibarreca2001target} compresses them while retaining
+signal, provided it is fitted inside the cross-validation loop. And the lag
+window must be tied to the decision it supports: a feature from week $t-1$ is
+unavailable to a planner committing spend four weeks out, so the admissible lag
+block is a function of the forecast horizon, not a free hyperparameter.
+
+Leakage is the dominant risk. \citet{kaufman2012leakage} formalise it as the
+introduction of information about the target that would not legitimately be
+available at prediction time, and identify exactly the two forms that threaten
+this dataset: post-outcome features, and improper partitioning that lets
+information cross the train/test boundary. On the partitioning side,
+\citet{bergmeir2012cv} show that standard $k$-fold cross-validation is invalid
+for serially dependent data and that evaluation must respect temporal order.
+
+\subsection{Evaluation metrics}
+
+For regression on a persistent series, absolute error against a \emph{naive}
+benchmark is the honest summary; \citet{hyndman2006accuracy} show that many
+popular accuracy measures degenerate in common cases and argue for scaling
+errors by a naive forecast's error. We adopt the corresponding discipline of
+reporting a persistence baseline beside every regression result.
+
+For imbalanced classification accuracy is actively misleading, since a
+constant-majority rule scores highly while achieving zero recall on the class of
+interest. \citet{saito2015prplot} show precision--recall curves are more
+informative than ROC curves under strong imbalance, because ROC-AUC is
+insensitive to abundant true negatives. Class weighting and resampling such as
+SMOTE \citep{chawla2002smote} are the standard remedies, though both shift the
+effective prior. All modelling here uses \code{scikit-learn} pipelines
+\citep{pedregosa2011sklearn}, which keep preprocessing fitted inside each fold.
+
+\subsection{Conclusion: trends, gaps and opportunities}
+
+Three themes emerge. The Broadway literature converges on \emph{survival} as the
+natural framing for run length, and shows that type, attendance trajectory and
+awards carry real signal. The tabular literature converges on a small set of
+model families, tree ensembles being the reasonable ceiling at this scale. And
+the methodological literature is emphatic that on serially dependent, imbalanced
+data the choice of split and metric determines whether a number means anything.
+
+The gap we can address is narrow but concrete: existing Broadway work is almost
+entirely retrospective, explaining what made a show succeed from variables
+observable only after the fact. Very little addresses the \emph{operational}
+question a theatre manager faces --- a short-horizon forecast of next month's
+demand for a show already running, from information available when the decision
+is made. That gap motivates the candidates in Section~\ref{sec:candidates}.

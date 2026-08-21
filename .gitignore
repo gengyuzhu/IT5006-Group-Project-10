@@ -1,0 +1,41 @@
+# --- Environment -----------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# --- Jupyter ---------------------------------------------------------------
+.ipynb_checkpoints/
+
+# --- Derived data (regenerate by running the notebooks) --------------------
+data/processed/
+
+# --- Course materials, not ours to redistribute ----------------------------
+# The assignment brief, the reference PDFs and the sample reports were provided
+# by the course. data/raw/broadway_clean.csv is committed so the repository is
+# self-contained and Streamlit Cloud can build from it; this root-level copy is
+# the original drop and would only be a duplicate.
+/broadway_clean.csv
+/phase 1 requirements.docx
+/NIBRS_DataDictionary.pdf
+/nibrs_diagram.pdf
+sample reports (for reference only)/
+
+# --- LaTeX build artefacts (main.pdf is committed deliberately) ------------
+report/*.aux
+report/*.bbl
+report/*.blg
+report/*.log
+report/*.out
+report/*.toc
+report/*.synctex.gz
+report/*.fls
+report/*.fdb_latexmk
+report/b*.log
+report/t*.log
+report/build*.log
+
+# --- OS --------------------------------------------------------------------
+Thumbs.db
+.DS_Store
+desktop.ini
