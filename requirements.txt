@@ -34,7 +34,3 @@ numpy>=2.3.2,<3        ; python_version >= "3.13"
 plotly==5.24.1         ; python_version < "3.13"
 plotly>=5.24.1,<7      ; python_version >= "3.13"
 
-# Reads data/processed/orders_dashboard.parquet. Unpinned deliberately:
-# Streamlit Cloud manages its own pyarrow build, and pinning it is what broke
-# the first deployment.
-pyarrow>=17

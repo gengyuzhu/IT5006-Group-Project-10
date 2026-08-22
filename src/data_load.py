@@ -150,18 +150,50 @@ CLEANING_DECISIONS: dict[str, dict[str, str]] = {
 # ---------------------------------------------------------------------------
 # Load + validate
 # ---------------------------------------------------------------------------
-def load_table(name: str) -> pd.DataFrame:
-    """Read one source table and assert the row count we documented."""
+# Slim read plan for the deployed dashboard.
+#
+# Reading all nine tables in full costs 303 MB of RAM, and most of that sits in
+# two places the analysis never touches: geolocation_city/state (redundant with
+# the customer and seller tables) and the two free-text review columns, which
+# are 88% and 59% empty. Selecting columns alone takes geolocation from 152 MB
+# to 24 MB, which is what matters on a 1 GB shared container.
+#
+# Dtypes are deliberately left alone. Narrowing the coordinates to float32 would
+# save a further 12 MB but perturbs the derived great-circle distance by up to a
+# metre, and an artifact that is only nearly identical to the analysed data is
+# not worth 12 MB. As written, load_all(slim=True) reproduces build_orders()
+# exactly, column for column.
+SLIM_USECOLS = {
+    "geolocation": ["geolocation_zip_code_prefix", "geolocation_lat",
+                    "geolocation_lng"],
+    "order_reviews": ["review_id", "order_id", "review_score",
+                      "review_creation_date", "review_answer_timestamp"],
+}
+SLIM_DTYPES: dict[str, dict[str, str]] = {}
+
+
+def load_table(name: str, slim: bool = False) -> pd.DataFrame:
+    """Read one source table and assert the row count we documented.
+
+    `slim=True` reads only the columns the order table is built from. Use it for
+    the dashboard; leave it False for the notebooks and report statistics, which
+    profile columns the model never sees.
+    """
     if name not in TABLES:
         raise KeyError(f"Unknown table {name!r}; expected one of {sorted(TABLES)}")
 
-    kwargs = {}
+    kwargs: dict = {}
     if name == "orders":
         kwargs["parse_dates"] = ORDER_DATE_COLS
     elif name == "order_reviews":
         kwargs["parse_dates"] = ["review_creation_date", "review_answer_timestamp"]
     elif name == "order_items":
         kwargs["parse_dates"] = ["shipping_limit_date"]
+
+    if slim and name in SLIM_USECOLS:
+        kwargs["usecols"] = SLIM_USECOLS[name]
+        if name in SLIM_DTYPES:
+            kwargs["dtype"] = SLIM_DTYPES[name]
 
     df = pd.read_csv(DATA_RAW / TABLES[name], **kwargs)
     expected = EXPECTED_ROWS[name]
@@ -172,9 +204,9 @@ def load_table(name: str) -> pd.DataFrame:
     return df
 
 
-def load_all() -> dict[str, pd.DataFrame]:
+def load_all(slim: bool = False) -> dict[str, pd.DataFrame]:
     """Read all nine tables."""
-    return {name: load_table(name) for name in TABLES}
+    return {name: load_table(name, slim=slim) for name in TABLES}
 
 
 # ---------------------------------------------------------------------------

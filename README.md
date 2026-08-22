@@ -20,15 +20,14 @@ relational tables.
 
 ## Quick start
 
-The raw data is **not** in this repository (121 MB; see [Data](#data) below).
-Copy the nine CSVs from Canvas into `data/raw/olist/`, then:
+The nine Olist tables are committed, so a clone is self-contained:
 
 ```bash
 python -m venv .venv && .venv/Scripts/activate && pip install -r requirements-dev.txt
 ```
 
 ```bash
-python src/build_dashboard_data.py && python src/report_stats.py
+python src/report_stats.py
 ```
 
 ```bash
@@ -40,7 +39,7 @@ the runtime set in with `-r requirements.txt` rather than restating it:
 
 | File | Adds | Installed by |
 |---|---|---|
-| `requirements.txt` | streamlit, pandas, numpy, plotly, pyarrow | Streamlit Cloud — exactly what `dashboard/app.py` imports |
+| `requirements.txt` | streamlit, pandas, numpy, plotly | Streamlit Cloud — exactly what `dashboard/app.py` imports |
 | `requirements-dev.txt` | `-r requirements.txt` **+** scikit-learn, scipy, matplotlib, Jupyter | you, for the notebooks and figures |
 
 The split exists because Streamlit Cloud installs `requirements.txt` and nothing
@@ -56,8 +55,14 @@ about 1.45 million rows, covering orders placed between September 2016 and
 October 2018. Distributed for IT5006 via Canvas — use that copy, not a fresh
 Kaggle download, so results stay comparable across teams.
 
+All nine are **committed to this repository** (126 MB), so cloning is enough to
+reproduce the notebooks, the figures and the dashboard. The largest file,
+geolocation at 61 MB, is under GitHub's 100 MB per-file limit. The 108 MB SQLite
+build of the same data is redundant with the CSVs and exceeds that limit, so it
+is excluded.
+
 ```
-data/raw/olist/          (git-ignored, 121 MB — copy from Canvas)
+data/raw/olist/          (126 MB, tracked)
 ├── olist_orders_dataset.csv              99,441   the analysis spine
 ├── olist_order_items_dataset.csv        112,650   one-to-many
 ├── olist_order_payments_dataset.csv     103,886   one-to-many
@@ -69,10 +74,15 @@ data/raw/olist/          (git-ignored, 121 MB — copy from Canvas)
 └── product_category_name_translation.csv     71
 ```
 
-`data/processed/orders_dashboard.parquet` (4 MB, **tracked**) is the joined,
-cleaned order table the deployed dashboard reads. Rebuild it with
-`python src/build_dashboard_data.py` whenever the cleaning or feature code
-changes.
+The dashboard joins these tables at startup rather than reading a pre-built
+artifact, so it can never drift from the report. Reading all nine in full costs
+303 MB of RAM; `load_all(slim=True)` selects only the columns the join consumes
+— it omits `geolocation_city/state` and the two free-text review columns — which
+takes the load to 164 MB and the peak to 268 MB, comfortably inside Streamlit
+Cloud's ~1 GB. Dtypes are left untouched, so the slim path reproduces the full
+one **column for column**; narrowing coordinates to `float32` would save another
+12 MB but shifts computed distances by up to a metre, which is not a trade worth
+making.
 
 ---
 
@@ -161,9 +171,7 @@ classifier reporting 95% accuracy would be the majority-class rule or a leak.
 ## Repository layout
 
 ```
-├── data/
-│   ├── raw/olist/                     git-ignored, from Canvas
-│   └── processed/                     4 MB dashboard artifact (tracked)
+├── data/raw/olist/                    the nine source tables (126 MB, tracked)
 ├── notebooks/
 │   ├── 01_data_audit.ipynb            nine tables, joins, keys, quality
 │   ├── 02_eda_temporal.ipynb          growth, Black Friday, delivery drift
@@ -174,8 +182,7 @@ classifier reporting 95% accuracy would be the majority-class rule or a leak.
 │   ├── data_load.py                   nine-table join + CLEANING_DECISIONS
 │   ├── features.py                    leakage-annotated builders + the guard
 │   ├── viz.py                         shared plot style, vector PDF export
-│   ├── report_stats.py                regenerates every number in the report
-│   └── build_dashboard_data.py        builds the dashboard artifact
+│   └── report_stats.py                regenerates every number in the report
 ├── dashboard/
 │   ├── app.py                         Streamlit, five linked views
 │   └── theme.py                       plotly template + CSS design system

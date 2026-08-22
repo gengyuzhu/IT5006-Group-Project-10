@@ -35,7 +35,7 @@ theme.register_template()
 st.markdown(theme.CSS, unsafe_allow_html=True)
 
 PLOT_CFG = {"displayModeBar": False, "responsive": True}
-DATA_FILE = PROJECT_ROOT / "data" / "processed" / "orders_dashboard.parquet"
+DATA_DIR = PROJECT_ROOT / "data" / "raw" / "olist"
 
 # Events visible in the delivery series.
 EVENTS = [
@@ -47,26 +47,40 @@ EVENTS = [
 # ===========================================================================
 # Data
 # ===========================================================================
-@st.cache_data(show_spinner="Loading Olist order data…")
+@st.cache_data(show_spinner="Joining the nine Olist tables…")
 def get_data() -> pd.DataFrame:
-    """Read the pre-built order table.
+    """Join the nine raw tables and derive the order-level features.
 
-    Built by src/build_dashboard_data.py from the nine raw CSVs. Shipping the
-    artifact rather than the 121 MB of source keeps the repository small and the
-    cold start fast.
+    Runs exactly the pipeline the notebooks and the report use, so no figure
+    here can disagree with the PDF. `slim=True` reads only the columns the join
+    consumes - it leaves out geolocation_city/state and the two free-text review
+    columns - which halves peak memory without changing a single value.
+
+    Cached, so the ~5 s join happens once per container rather than per visit.
     """
-    df = pd.read_parquet(DATA_FILE)
+    from data_load import load_all, load_analysis
+    from features import build_features
+
+    df = build_features(load_analysis(load_all(slim=True)))
     df["month"] = df["order_purchase_timestamp"].dt.to_period("M").dt.to_timestamp()
     return df
 
 
 try:
     DF = get_data()
-except FileNotFoundError:
+except (FileNotFoundError, OSError):
     st.error(
-        "**Order data not found.** Expected `data/processed/orders_dashboard.parquet`.\n\n"
-        "Build it from the raw Olist tables with:\n\n"
-        "```\npython src/build_dashboard_data.py\n```"
+        f"**Source data not found.** Expected the nine Olist CSVs in "
+        f"`data/raw/olist/`.\n\nClone the full repository and run this app from "
+        f"the project root:\n\n```\nstreamlit run dashboard/app.py\n```"
+    )
+    st.stop()
+except AssertionError as exc:
+    st.error(
+        f"**The data failed its integrity contract:** {exc}\n\n"
+        "`src/data_load.py` asserts the row count of every source table. A "
+        "failure here means the data has changed and no figure on this page can "
+        "be trusted."
     )
     st.stop()
 except Exception as exc:  # noqa: BLE001 - last-resort guard for a public app

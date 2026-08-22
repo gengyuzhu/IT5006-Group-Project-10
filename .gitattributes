@@ -1,0 +1,14 @@
+# Data files must be byte-for-byte identical everywhere. Without this, git
+# rewrites LF to CRLF on Windows checkout, which changes file size, produces
+# noisy diffs, and would silently differ from the copy the analysis was run on.
+*.csv   -text
+*.pdf   binary
+*.parquet binary
+*.ipynb -text
+
+# Keep source files normalised as usual.
+*.py    text
+*.md    text
+*.tex   text
+*.bib   text
+*.txt   text

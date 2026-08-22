@@ -8,19 +8,17 @@ __pycache__/
 .ipynb_checkpoints/
 
 # --- Data -------------------------------------------------------------------
-# The nine raw Olist tables total 121 MB (geolocation alone is 61 MB) and the
-# SQLite build is 108 MB, past GitHub's per-file limit. They are course data
-# from Canvas; the README says where to put them.
-data/raw/
+# The nine raw Olist CSVs ARE committed (126 MB) so the repository is
+# self-contained: anyone can clone it and reproduce the notebooks, the figures
+# and the deployed dashboard without hunting for the source files. The largest,
+# geolocation at 61 MB, is under GitHub's 100 MB per-file limit.
+#
+# The 108 MB SQLite build of the same data is redundant with the CSVs and does
+# exceed that limit, so it stays out.
 IT5006_Project-Data/
 
-# Derived data is ignored by default, with one deliberate exception: the 4 MB
-# artifact the deployed dashboard reads. Rebuilding it needs the raw tables,
-# which are not in the repository, so the app could not start without it.
-# Note the trailing /* rather than /: git cannot re-include a file whose parent
-# directory has itself been excluded, so the negation would silently do nothing.
-data/processed/*
-!data/processed/orders_dashboard.parquet
+# Derived data is regenerated from the CSVs on demand and is not tracked.
+data/processed/
 
 # --- Course materials, not ours to redistribute ----------------------------
 # The assignment brief, the reference PDFs and the sample reports were provided
