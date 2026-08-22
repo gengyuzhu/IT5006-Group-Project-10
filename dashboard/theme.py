@@ -1,5 +1,5 @@
 """
-Visual design system for the dashboard.
+Visual design system for the Olist dashboard.
 
 Kept separate from app.py so the styling decisions are reviewable on their own
 and so every chart is guaranteed to use the same template rather than plotly's
@@ -19,18 +19,16 @@ LINE = "#E3E8ED"         # hairlines and gridlines
 SURFACE = "#FFFFFF"
 CANVAS = "#F5F7F9"
 
-PRIMARY = "#2F6F9F"      # capacity / primary series
-ACCENT = "#C1666B"       # alerts, shocks, thresholds
+PRIMARY = "#2F6F9F"      # volume and primary series
+ACCENT = "#C1666B"       # lateness, dissatisfaction, thresholds
 GOLD = "#C08B2E"         # revenue
-GREEN = "#5B8C5A"        # positive / specials
-
-TYPE_COLOURS = {"Musical": PRIMARY, "Play": ACCENT, "Special": GREEN}
+GREEN = "#5B8C5A"        # positive outcomes
 
 SEQUENTIAL = [
     "#F2F6F9", "#D6E3ED", "#AFC9DC", "#87AFCB",
     "#5F94B9", "#3F7BA6", "#2F6F9F", "#1E4E73",
 ]
-# Diverging ramp for the seasonality heatmap: cool = quiet weeks, warm = busy.
+# Diverging ramp: cool = fast/on-time, warm = slow/late.
 DIVERGING = [
     [0.00, "#3D6E9C"], [0.25, "#8FB4CE"], [0.45, "#E4EAEF"],
     [0.60, "#F2D9B8"], [0.80, "#D99A62"], [1.00, "#B4553F"],
@@ -64,9 +62,9 @@ def register_template() -> str:
         colorscale=dict(sequential=[[i / (len(SEQUENTIAL) - 1), c]
                                     for i, c in enumerate(SEQUENTIAL)]),
     )
-    pio.templates["broadway"] = tpl
-    pio.templates.default = "broadway"
-    return "broadway"
+    pio.templates["olist"] = tpl
+    pio.templates.default = "olist"
+    return "olist"
 
 
 # ---------------------------------------------------------------------------

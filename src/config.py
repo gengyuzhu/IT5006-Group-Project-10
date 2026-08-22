@@ -1,9 +1,8 @@
 """
-Project-wide configuration for the IT5006 Phase 1 Broadway analysis.
+Project-wide configuration for the IT5006 Phase 1 Olist analysis.
 
-Everything that a downstream notebook, the dashboard, or the report might need
-to quote as a "decision we made" lives here, so that there is exactly one
-authoritative copy of each constant.
+Everything a notebook, the dashboard or the report might quote as "a decision we
+made" lives here, so there is exactly one authoritative copy of each constant.
 """
 from __future__ import annotations
 
@@ -20,101 +19,131 @@ SEED = 42
 # Paths
 # --------------------------------------------------------------------------
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DATA_RAW = PROJECT_ROOT / "data" / "raw" / "broadway_clean.csv"
+DATA_RAW = PROJECT_ROOT / "data" / "raw" / "olist"
 DATA_PROCESSED = PROJECT_ROOT / "data" / "processed"
 FIGURES_DIR = PROJECT_ROOT / "report" / "figures"
 
 DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
-# --------------------------------------------------------------------------
-# Raw-file expectations (asserted in data_load.load_raw)
-# --------------------------------------------------------------------------
-EXPECTED_RAW_ROWS = 29_167
-EXPECTED_RAW_COLS = 12
-NATURAL_KEY = ["Date.Full", "Show.Name", "Show.Theatre"]
+# The nine tables named in the project brief.
+TABLES = {
+    "orders": "olist_orders_dataset.csv",
+    "order_items": "olist_order_items_dataset.csv",
+    "order_payments": "olist_order_payments_dataset.csv",
+    "order_reviews": "olist_order_reviews_dataset.csv",
+    "customers": "olist_customers_dataset.csv",
+    "sellers": "olist_sellers_dataset.csv",
+    "products": "olist_products_dataset.csv",
+    "geolocation": "olist_geolocation_dataset.csv",
+    "category_translation": "product_category_name_translation.csv",
+}
+
+# Row counts asserted on load, so a changed source file fails loudly rather than
+# silently altering every number in the report.
+EXPECTED_ROWS = {
+    "orders": 99_441,
+    "order_items": 112_650,
+    "order_payments": 103_886,
+    "order_reviews": 99_224,
+    "customers": 99_441,
+    "sellers": 3_095,
+    "products": 32_951,
+    "geolocation": 1_000_163,
+    "category_translation": 71,
+}
 
 # --------------------------------------------------------------------------
 # Analysis window
 # --------------------------------------------------------------------------
-# The raw file starts in Aug 1990 but has two very large coverage holes
-# (29 weeks in 1990-91 and 42 weeks in 1991-92) plus a thin ramp-up through
-# 1995. We restrict the main analysis to the fully-covered era and report the
-# early sparsity separately as a data-quality exhibit.
-ANALYSIS_START = pd.Timestamp("1996-01-01")
-ANALYSIS_END = pd.Timestamp("2016-08-14")
+# The raw file spans 2016-09 to 2018-10, but the first four months are a
+# pilot period with a handful of orders per month, and the final weeks are
+# truncated mid-cycle. We model the fully-operational window and report the
+# ramp-up separately as a coverage exhibit.
+ANALYSIS_START = pd.Timestamp("2017-01-01")
+ANALYSIS_END = pd.Timestamp("2018-08-31")
 
 # --------------------------------------------------------------------------
-# Chronological split (used by the Phase 1 baseline probes and by Phase 2)
+# Chronological split
 # --------------------------------------------------------------------------
-TRAIN_END = pd.Timestamp("2013-12-31")
-VAL_END = pd.Timestamp("2014-12-31")
-# Test = everything after VAL_END, i.e. 2015-01-01 .. 2016-08-14
+TRAIN_END = pd.Timestamp("2018-04-30")
+VAL_END = pd.Timestamp("2018-06-30")
+# Test = 2018-07-01 .. ANALYSIS_END
 
 # --------------------------------------------------------------------------
 # Target definitions
 # --------------------------------------------------------------------------
-# Demand bands for the classification framing of Candidate 1. Cuts are the
-# empirical terciles of Statistics.Capacity over the analysis window; they are
-# recomputed and asserted in notebook 04 so the report never quotes a stale
-# number.
-CAPACITY_BAND_CUTS = (73.0, 89.0)
-CAPACITY_BAND_LABELS = ["Low", "Mid", "High"]
-
-# How far ahead Candidate 1 forecasts. A one-week horizon is nearly free -
-# persistence alone scores 0.73 - but it is also operationally useless: a
-# marketing buy or a TKTS allocation cannot be changed with a week's notice.
-# Four weeks is the horizon at which the decision is actually made, and it is
-# where a model earns its keep, because persistence has decayed to 0.61 by then.
-# Features for horizon h use weeks t-h back to t-h-3 only.
-FORECAST_HORIZON_WEEKS = 4
-HORIZONS = (1, 2, 4)
-
-# Candidate 2: does this production close within N weeks?
-CLOSURE_HORIZON_WEEKS = 8
-
-# A production is treated as a new run block if it disappears from the
-# listings for more than this many weeks and then returns.
-RUN_BLOCK_GAP_WEEKS = 4
+# Candidate 1, framing B: an order is late if it reaches the customer after the
+# delivery date promised at checkout.
+# Candidate 2: a review of 1 or 2 stars counts as low satisfaction.
+LOW_REVIEW_MAX_SCORE = 2
+# Candidate 3: did the customer place another order within this many days?
+REPEAT_HORIZON_DAYS = 30
 
 # --------------------------------------------------------------------------
 # Leakage guard
 # --------------------------------------------------------------------------
-# Statistics.Capacity is a deterministic function of attendance, performances
-# and the theatre's seat count:
-#     Capacity% == Attendance / (theatre_seats * Performances) * 100
-# so any same-week attendance/gross measure trivially reconstructs the target.
-# features.assert_no_leakage() refuses to let these reach a model.
-SAME_WEEK_FORBIDDEN = {
-    "Statistics.Attendance",
-    "Statistics.Gross",
-    "Statistics.Gross Potential",
-    "Statistics.Capacity",
-    "Statistics.Performances",
-    "avg_ticket_price",
-    "seats_per_perf",
+# Leakage is not one rule but one rule *per prediction moment*, because what is
+# already known depends on when the model runs.
+#
+#   at_checkout - the order has just been placed. Nothing about fulfilment or
+#                 the customer's eventual opinion exists yet. Used by the
+#                 delivery candidates and by repeat-purchase.
+#   at_delivery - the parcel has arrived and we are predicting the review that
+#                 has not been written yet. The delivery outcome is now history
+#                 and is admissible; the brief itself lists "delivery
+#                 performance" among the features for this problem. Only the
+#                 review and its timestamps remain forbidden.
+#
+# assert_no_leakage(features, regime) enforces the right set.
+_REVIEW_COLS = {
+    "review_score", "review_creation_date", "review_answer_timestamp",
+    "is_low_review", "target_low_review",
+}
+_DELIVERY_COLS = {
+    "order_delivered_customer_date", "order_delivered_carrier_date",
+    "delivery_days", "is_late", "delay_vs_estimate_days",
+    "target_delivery_days", "target_is_late",
+}
+_FULFILMENT_COLS = {
+    # only known once fulfilment has started, i.e. after checkout
+    "order_approved_at", "approval_hours", "shipping_limit_date", "order_status",
 }
 
-# --------------------------------------------------------------------------
-# Real-world events visible in the data (used to annotate temporal figures)
-# --------------------------------------------------------------------------
-EVENTS = [
-    (pd.Timestamp("2001-09-16"), "9/11"),
-    (pd.Timestamp("2007-11-18"), "Stagehand strike"),
-    (pd.Timestamp("2008-10-05"), "Global financial crisis"),
-]
+LEAKAGE_REGIMES = {
+    "at_checkout": _REVIEW_COLS | _DELIVERY_COLS | _FULFILMENT_COLS,
+    "at_delivery": _REVIEW_COLS | {"order_status"},
+}
+
+# Columns describing how delivery actually went. Forbidden at checkout,
+# admissible once the parcel has arrived.
+DELIVERY_OUTCOME_FEATURES = ["delivery_days", "delay_vs_estimate_days", "is_late"]
 
 # --------------------------------------------------------------------------
 # Plot theme
 # --------------------------------------------------------------------------
-FIG_WIDTH = 7.0          # inches, matches \linewidth at 1in margins on A4
+FIG_WIDTH = 7.0          # inches; matches \linewidth at 1in margins on A4
 FIG_HEIGHT = 4.0
 PALETTE = {
-    "Musical": "#2F6F9F",
-    "Play": "#C1666B",
-    "Special": "#7A9E6F",
     "primary": "#2F6F9F",
     "accent": "#C1666B",
+    "gold": "#C08B2E",
+    "green": "#5B8C5A",
     "muted": "#8C8C8C",
     "grid": "#DDDDDD",
+    "late": "#C1666B",
+    "ontime": "#2F6F9F",
+}
+
+# Brazilian regions, used to collapse 27 states into an interpretable grouping.
+STATE_REGION = {
+    "AC": "North", "AP": "North", "AM": "North", "PA": "North", "RO": "North",
+    "RR": "North", "TO": "North",
+    "AL": "Northeast", "BA": "Northeast", "CE": "Northeast", "MA": "Northeast",
+    "PB": "Northeast", "PE": "Northeast", "PI": "Northeast", "RN": "Northeast",
+    "SE": "Northeast",
+    "DF": "Central-West", "GO": "Central-West", "MT": "Central-West",
+    "MS": "Central-West",
+    "ES": "Southeast", "MG": "Southeast", "RJ": "Southeast", "SP": "Southeast",
+    "PR": "South", "RS": "South", "SC": "South",
 }

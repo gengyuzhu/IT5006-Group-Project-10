@@ -21,7 +21,7 @@ scipy>=1.16.2,<2           ; python_version >= "3.13"
 matplotlib==3.9.2          ; python_version < "3.13"
 matplotlib>=3.10.6,<4      ; python_version >= "3.13"
 
-# Notebook generation and execution (src/py_to_nb.py, nbconvert --execute).
+# Notebook execution (nbconvert --execute).
 nbformat==5.10.4
 jupyter==1.1.1
 nbconvert==7.16.4

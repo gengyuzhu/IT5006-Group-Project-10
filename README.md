@@ -1,10 +1,11 @@
-# IT5006 Phase 1 — Forecasting Weekly Demand for Broadway Productions
+# IT5006 Phase 1 — Predicting Delivery Performance and Customer Satisfaction
 
 **Group 10** · Pan Pinyou · Li Yudan · Zhu Gengyu
 National University of Singapore · IT5006 Fundamentals of Data Analytics
 
 Literature review, exploratory data analysis, and an interactive dashboard over
-26 years of Broadway weekly box-office data.
+the **Olist Brazilian E-Commerce** dataset — 99,441 orders across nine
+relational tables.
 
 **Deliverables**
 
@@ -19,174 +20,184 @@ Literature review, exploratory data analysis, and an interactive dashboard over
 
 ## Quick start
 
-The base Anaconda install on the original machine is broken (`numpy 2.2.6`
-alongside `pandas`/`scipy`/`matplotlib` compiled against numpy 1.x, so
-`import pandas` raises `ValueError: numpy.dtype size changed`). **Always work
-inside the virtual environment**, never the base conda env.
+The raw data is **not** in this repository (121 MB; see [Data](#data) below).
+Copy the nine CSVs from Canvas into `data/raw/olist/`, then:
 
 ```bash
 python -m venv .venv && .venv/Scripts/activate && pip install -r requirements-dev.txt
 ```
 
-Two dependency files, and they do **not** overlap — `requirements-dev.txt`
-pulls the runtime set in with `-r requirements.txt` rather than restating it, so
-no package version is written twice:
-
-| File | Adds | Installed by |
-|---|---|---|
-| `requirements.txt` | streamlit, pandas, numpy, plotly | Streamlit Cloud — exactly what `dashboard/app.py` imports |
-| `requirements-dev.txt` | `-r requirements.txt` **+** scikit-learn, scipy, matplotlib, Jupyter | you, for the notebooks and figures |
-
-The split exists because Streamlit Cloud installs `requirements.txt` and nothing
-else. Merging the two would put the whole analysis stack back into the
-deployment — which is what broke it: a pinned `pyarrow` the project never
-imported aborted the build outright. Four packages instead of ~130 makes the
-build fast and leaves almost nothing that can fail. A guard test confirms the
-dashboard's entire import graph runs with every dev-only package made
-unimportable.
-
-Then, in order:
-
 ```bash
-python src/report_stats.py
+python src/build_dashboard_data.py && python src/report_stats.py
 ```
 
 ```bash
 streamlit run dashboard/app.py
 ```
 
+Two dependency files, and they do **not** overlap — `requirements-dev.txt` pulls
+the runtime set in with `-r requirements.txt` rather than restating it:
+
+| File | Adds | Installed by |
+|---|---|---|
+| `requirements.txt` | streamlit, pandas, numpy, plotly, pyarrow | Streamlit Cloud — exactly what `dashboard/app.py` imports |
+| `requirements-dev.txt` | `-r requirements.txt` **+** scikit-learn, scipy, matplotlib, Jupyter | you, for the notebooks and figures |
+
+The split exists because Streamlit Cloud installs `requirements.txt` and nothing
+else; merging the two would put the whole analysis stack back into the
+deployment, which is what broke it the first time.
+
+---
+
+## Data
+
+The **Brazilian E-Commerce Public Dataset by Olist**: nine related CSV tables,
+about 1.45 million rows, covering orders placed between September 2016 and
+October 2018. Distributed for IT5006 via Canvas — use that copy, not a fresh
+Kaggle download, so results stay comparable across teams.
+
+```
+data/raw/olist/          (git-ignored, 121 MB — copy from Canvas)
+├── olist_orders_dataset.csv              99,441   the analysis spine
+├── olist_order_items_dataset.csv        112,650   one-to-many
+├── olist_order_payments_dataset.csv     103,886   one-to-many
+├── olist_order_reviews_dataset.csv       99,224   one-to-many
+├── olist_customers_dataset.csv           99,441
+├── olist_sellers_dataset.csv              3,095
+├── olist_products_dataset.csv            32,951
+├── olist_geolocation_dataset.csv      1,000,163
+└── product_category_name_translation.csv     71
+```
+
+`data/processed/orders_dashboard.parquet` (4 MB, **tracked**) is the joined,
+cleaned order table the deployed dashboard reads. Rebuild it with
+`python src/build_dashboard_data.py` whenever the cleaning or feature code
+changes.
+
 ---
 
 ## What the analysis found
 
-The dataset is `broadway_clean.csv`: 29,167 rows, one per **week × show ×
-theatre**, spanning 1990-08-26 to 2016-08-14 across 820 shows and 56 theatres.
+Six findings shape everything downstream.
 
-Five findings shape everything downstream:
+1. **Three of the nine tables are one-to-many against orders.** Joining them
+   directly turns 99,441 orders into 118,437 rows — a 19% inflation — and biases
+   every average towards large baskets. Each child table is aggregated to one
+   row per order *before* joining.
+2. **`customer_id` is not a customer.** It is regenerated per order: 99,441 of
+   them for 96,096 real people. Group on it and you conclude there are no repeat
+   buyers; group on `customer_unique_id` and 2,997 people (3.1%) ordered again,
+   one of them 17 times.
+3. **Delivery performance drifts hard.** Mean lead time falls from 16.9 days
+   (Feb 2018) to 7.7 days (Aug 2018) — and by **5.34 days** between the training
+   and test periods. Under a level shift that size, R² against a baseline fitted
+   on the past goes negative even for a useful model, so **MAE** is the honest
+   regression metric.
+4. **Lateness is volatile, not predictable.** It swings between 1.4% and 21.4%
+   monthly, spiking at Black Friday 2017 and during the May 2018 truckers'
+   strike — exogenous shocks no order-level feature can anticipate.
+5. **A late delivery raises the 1–2 star rate from 9.2% to 54.0%**, a 5.9×
+   increase, monotone in how late the parcel is. This is the strongest
+   relationship in the data.
+6. **The prediction moment is a design decision, not a detail** — see below.
 
-1. **A file with zero nulls is not a clean file.** 2,309 rows (7.9%) report zero
-   performances alongside positive attendance — structurally impossible — and
-   1,918 rows (6.6%) code gross potential as zero, including 96% of all 1996
-   rows. Both cluster by *reporting era*, not by show.
-2. **`Statistics.Capacity` is an undocumented percentage, not a seat count.**
-   Inverting `capacity = attendance / (seats × performances)` recovers seat
-   counts matching published figures to a median error of **1.7%** (the
-   Lunt-Fontanne recovers exactly its published 1,509 seats).
-3. **Nominal revenue growth is a price effect.** Median ticket price rises 109%
-   between 1996 and 2015 while capacity utilisation moves from 82% to 85%.
-4. **Seasonality exists only at week resolution.** ISO weeks 52–53 hit 90%
-   capacity against 73% in weeks 36 and 44 — a 17-point swing. Measured
-   *monthly*, that contrast is exactly **zero**, because the holiday peak is a
-   two-week phenomenon cancelled by the slow first three weeks of December.
-5. **Leakage is the central methodological risk.** Capacity is an identity over
-   attendance, performances and seat count, and reconstructs from same-week
-   columns to **0.48 percentage points**.
+### Leakage: one rule per prediction moment
 
-### The leakage guard
+Leakage here is not one rule, because *what is already known depends on when the
+model runs*. `assert_no_leakage(features, regime)` enforces the right set:
 
-Because of finding 5, `features.assert_no_leakage()` rejects any feature list
-containing a same-week outcome column, and every modelling cell must pass it.
-The cost of ignoring it is measured directly in notebook 04:
+| Regime | Situation | Forbidden |
+|---|---|---|
+| `at_checkout` | order just placed | delivery dates, review, `order_approved_at`, status |
+| `at_delivery` | parcel arrived, review not yet written | review score and its timestamps only |
 
-| Feature set | Test accuracy |
-|---|---|
-| Leakage-safe (what we report) | **0.638** |
-| \+ same-week attendance | 0.875 |
-| \+ same-week attendance and performances | 0.902 |
-
-Those last two numbers are not achievements; they are what this dataset's
-failure mode looks like.
+Moving the review model between the two nearly **doubles** achievable signal
+(PR-AUC 0.212 → 0.402). Moving it the wrong way is worse: adding one forbidden
+column to the late-delivery model takes ROC-AUC from **0.589 to 1.000** — the
+model is reading the answer, not predicting it.
 
 ---
 
 ## Candidate problems
 
-Three were explored against the brief's scoping checklist.
+Three were explored against the brief's scoping checklist. Two model families
+only: a linear baseline and one tree ensemble, reused across both task types.
 
-**Candidate 1 — demand for a running production, 4 weeks ahead (primary).**
-One question framed twice: regression on capacity utilisation, and
-classification into three bands at training-set terciles. The horizon was chosen
-with evidence rather than tuned — capacity has lag-1 autocorrelation 0.84, so at
-one week ahead persistence scores 0.728 and a model adds nothing, but a one-week
-forecast cannot change a marketing commitment either:
+**Candidate 1 — delivery performance, framed twice (primary).** Regression on
+lead time and classification of late vs on-time, from one coherent question.
 
-| Horizon | Persistence acc. | Model acc. | Persistence MAE | Model MAE |
-|---|---|---|---|---|
-| 1 week | **0.728** | 0.724 | 5.52 | 5.33 |
-| 2 weeks | 0.634 | **0.656** | 7.21 | 6.52 |
-| 4 weeks | 0.607 | **0.638** | 8.01 | 7.36 |
+| Predictor | MAE (days) | R² |
+|---|---|---|
+| Mean of training period | 6.65 | −0.99 |
+| Olist's own delivery promise | 9.79 | −4.13 |
+| Ridge | 4.61 | −0.23 |
+| **HistGradientBoosting** | **3.89** | **0.07** |
 
-At four weeks the classifier reaches **0.638** against a 0.315 majority baseline
-and 0.607 persistence baseline; the regression reaches MAE 7.36 / R² 0.546
-against 8.01 / 0.399.
+A 41.5% MAE reduction. Note the platform's own promise is a *worse* point
+forecast than a constant — Olist pads its estimates deliberately, since a
+promise the customer beats is good service.
 
-**Candidate 2 — closure risk within 8 weeks (secondary).** 22.1% positive, with
-208 rows right-censored and labelled missing rather than defaulted to "no".
-PR-AUC **0.698** against a 0.204 no-skill floor, ROC-AUC 0.887, minority recall
-0.806. Its accuracy of 0.813 is *below* the 0.796 scored by always predicting
-"stays open" — a rule that catches none of the closures it exists to find.
+The classification is weak and honestly so: balanced accuracy 0.580, PR-AUC
+0.121 against a 0.074 floor. **Always predicting "on time" scores 0.926
+accuracy** while catching zero late orders — exactly the trap the brief warns
+about.
 
-**Candidate 3 — opening-month gross (deprioritised).** R² 0.292. Without lag
-features little remains, and the drivers the literature identifies for a new
-show (advance sales, casting, marketing spend, reviews) are absent from this
-dataset. Documenting the boundary beat forcing a weak model.
+**Candidate 2 — low review score, predicted at delivery (secondary).** The
+strongest classifier found: PR-AUC **0.402** vs a 0.110 floor (3.6×), balanced
+accuracy **0.692**, ROC-AUC 0.730 — and identical (0.403) on customers never
+seen in training, so it is not memorising buyers.
 
-We expect a tuned Phase 2 classifier in the **low-to-mid 60s**. A result above
-90% on this target would indicate leakage, not skill.
+**Candidate 3 — repeat purchase within 30 days (rejected).** Base rate 1.8%,
+balanced accuracy 0.517 — chance. Separately, right-censoring destroys the
+evaluation: at the natural 90-day horizon *no* labelled orders remain in the
+test window at all.
+
+We expect a tuned Phase 2 Candidate 2 classifier in the **high 60s** balanced
+accuracy and Candidate 1's regression at **MAE 3.5–4 days**. A late-delivery
+classifier reporting 95% accuracy would be the majority-class rule or a leak.
 
 ---
 
 ## Repository layout
 
 ```
-├── data/raw/broadway_clean.csv        read-only source
+├── data/
+│   ├── raw/olist/                     git-ignored, from Canvas
+│   └── processed/                     4 MB dashboard artifact (tracked)
 ├── notebooks/
-│   ├── 01_data_audit.ipynb            data contract, quality audit, capacity validation
-│   ├── 02_eda_temporal.ipynb          trend, seasonality, exogenous shocks
-│   ├── 03_eda_entities.ipynb          shows, theatres, survival curves, correlations
-│   └── 04_candidate_problems.ipynb    horizon selection, leakage demo, three candidates
+│   ├── 01_data_audit.ipynb            nine tables, joins, keys, quality
+│   ├── 02_eda_temporal.ipynb          growth, Black Friday, delivery drift
+│   ├── 03_eda_entities.ipynb          geography, products, money, reviews
+│   └── 04_candidate_problems.ipynb    leakage regimes, three candidates
 ├── src/
-│   ├── config.py                      seeds, paths, windows, band cuts, plot theme
-│   ├── data_load.py                   single data entry point + CLEANING_DECISIONS
-│   ├── features.py                    leakage-annotated feature builders + the guard
+│   ├── config.py                      seeds, paths, windows, leakage regimes
+│   ├── data_load.py                   nine-table join + CLEANING_DECISIONS
+│   ├── features.py                    leakage-annotated builders + the guard
 │   ├── viz.py                         shared plot style, vector PDF export
-│   └── report_stats.py                regenerates every number quoted in the report
+│   ├── report_stats.py                regenerates every number in the report
+│   └── build_dashboard_data.py        builds the dashboard artifact
 ├── dashboard/
 │   ├── app.py                         Streamlit, five linked views
 │   └── theme.py                       plotly template + CSS design system
-├── .streamlit/config.toml             widget theme matched to theme.py
 ├── requirements.txt                   dashboard runtime (what Cloud installs)
 ├── requirements-dev.txt               + analysis stack for the notebooks
 └── report/
     ├── main.pdf                       the submitted report
-    └── figures/                       11 vector PDFs, generated by the notebooks
+    └── figures/                       9 vector PDFs, generated by the notebooks
 ```
-
 
 ## Reproducibility
 
 - `SEED = 42` everywhere; both requirements files pin exact versions on
-  Python <= 3.12, the interpreter every reported number was produced on.
-- `data_load.load_raw()` asserts the raw data contract (29,167 × 12, natural key
-  uniqueness, all dates Sunday). Downstream numbers are protected by it.
+  Python ≤ 3.12, the interpreter every reported number was produced on.
+- `load_table()` asserts the row count of all nine source tables, and
+  `build_orders()` asserts the grain after joining. A changed source file fails
+  loudly rather than silently altering the report.
 - Every figure is generated into `report/figures/` as vector PDF by the
   notebooks — none is pasted in by hand.
-- `python src/report_stats.py` recomputes every numeric claim in the report;
-  diff it against the manuscript before submitting.
-- All 19 bibliography entries were verified against publisher records
-  (DOI, volume, issue, pages) rather than quoted from memory.
-
-## Dashboard
-
-Five linked views, all reading through `src/data_load.py`:
-
-| Tab | What it shows |
-|---|---|
-| **Overview** | Market gross / attendance / productions with the three exogenous shocks annotated |
-| **Productions** | Compare shows on calendar time *or* aligned by week of run; run-length distribution |
-| **Venues** | Recovered seat count against utilisation; highest-grossing houses |
-| **Seasonality** | Week × year heatmap, plus a side-by-side showing month-level aggregation destroying the signal |
-| **Data quality** | Zero-coded missingness over time, the seat-count validation, and the cleaning contract |
+- `python src/report_stats.py` recomputes all 160 numeric claims in the report.
+- All 15 bibliography entries were verified against publisher records (DOI,
+  volume, issue, pages) rather than quoted from memory.
 
 ### Deploying
 
@@ -195,16 +206,6 @@ built from `main` / `dashboard/app.py` on **Python 3.12**.
 
 > **Keep the Python version at 3.12 or lower** (*App settings → General*).
 > `numpy==1.26.4` publishes wheels only up to `cp312`. On Python 3.13+ pip finds
-> no wheel and tries to compile numpy from source; the build dies and the app
-> then hangs on *"Your app is in the oven"* indefinitely, with the real error
-> buried in the build log rather than shown in the app. `requirements.txt`
-> carries environment markers that fall back to a wheel-backed numpy on newer
-> interpreters, but 3.12 is what the reported numbers were validated against —
-> the deployment log confirms it installs the exact pins
-> (`streamlit==1.39.0`, `pandas==2.2.3`, `numpy==1.26.4`, `plotly==5.24.1`).
-
-## Data source
-
-Broadway weekly grosses, distributed for IT5006 via Canvas as
-`broadway_clean.csv`; originally compiled by the CORGIS Dataset Project from
-data published by The Broadway League.
+> no wheel and compiles numpy from source; the build dies and the app then hangs
+> on *"Your app is in the oven"* indefinitely, with the real error buried in the
+> build log rather than shown in the app.

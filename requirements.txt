@@ -1,9 +1,9 @@
 # Runtime dependencies for the deployed Streamlit dashboard.
 #
 # Deliberately minimal: this is the file Streamlit Community Cloud installs, and
-# every package here is one that dashboard/app.py actually imports. The heavier
-# analysis stack (scikit-learn, matplotlib, Jupyter) lives in
-# requirements-dev.txt so the deployment neither waits for it nor fails on it.
+# every package here is one that dashboard/app.py actually imports. The analysis
+# stack (scikit-learn, matplotlib, Jupyter) lives in requirements-dev.txt so the
+# deployment neither waits for it nor fails on it.
 #
 #     pip install -r requirements-dev.txt      # everything, for the notebooks
 #     pip install -r requirements.txt          # just the dashboard
@@ -16,16 +16,15 @@
 # Streamlit Cloud may build on a newer interpreter. numpy 1.26.4 ships wheels
 # only up to cp312, so on Python 3.13+ pip finds no wheel, falls back to
 # compiling from source, and the build fails - the app then hangs on "Your app
-# is in the oven" indefinitely. The markers let pip select a wheel-backed
-# version on newer interpreters while leaving the validated pins untouched.
+# is in the oven" indefinitely. The markers select a wheel-backed version on
+# newer interpreters. Floors on the 3.13+ branch are the first releases that
+# publish cp314 wheels.
 #
-# Preferred deployment target: Python 3.12 (exact pins, identical to local).
+# Deployment target: Python 3.12 (exact pins, identical to local).
 
 streamlit==1.39.0      ; python_version < "3.13"
 streamlit>=1.39.0,<2   ; python_version >= "3.13"
 
-# Floors on the 3.13+ branch are the first releases that publish cp314 wheels
-# (numpy 2.3.2, pandas 2.3.3). Anything older would be a source build again.
 pandas==2.2.3          ; python_version < "3.13"
 pandas>=2.3.3,<3       ; python_version >= "3.13"
 
@@ -34,3 +33,8 @@ numpy>=2.3.2,<3        ; python_version >= "3.13"
 
 plotly==5.24.1         ; python_version < "3.13"
 plotly>=5.24.1,<7      ; python_version >= "3.13"
+
+# Reads data/processed/orders_dashboard.parquet. Unpinned deliberately:
+# Streamlit Cloud manages its own pyarrow build, and pinning it is what broke
+# the first deployment.
+pyarrow>=17

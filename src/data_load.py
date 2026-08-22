@@ -1,19 +1,23 @@
 """
-Single entry point for the Broadway weekly grosses data.
+Single entry point for the Olist Brazilian e-commerce data.
 
-Every notebook, the dashboard and the report read the data through this module,
-so the numbers quoted in the PDF and the numbers rendered in the dashboard can
-never drift apart.
+Every notebook, the dashboard and the report read through this module, so the
+numbers quoted in the PDF and the numbers rendered in the dashboard cannot
+drift apart.
+
+The nine source tables are normalised around `orders`. Because several of them
+are one-to-many against an order, joining naively would multiply rows and
+silently reweight every statistic; `build_orders()` aggregates each child table
+to one row per order first, then joins.
 
 Pipeline
 --------
-    load_raw()       read CSV, parse dates, assert the raw data contract
-    clean()          apply the documented cleaning decisions (CLEANING_DECISIONS)
-    load_analysis()  load_raw -> clean -> restrict to the analysis window
+    load_table(name)   read one CSV, assert its row count
+    load_all()         read all nine
+    build_orders()     aggregate + join to one row per order
+    load_analysis()    build_orders -> restrict to the analysis window
 """
 from __future__ import annotations
-
-import re
 
 import numpy as np
 import pandas as pd
@@ -22,208 +26,324 @@ from config import (
     ANALYSIS_END,
     ANALYSIS_START,
     DATA_RAW,
-    EXPECTED_RAW_COLS,
-    EXPECTED_RAW_ROWS,
-    NATURAL_KEY,
-    RUN_BLOCK_GAP_WEEKS,
+    EXPECTED_ROWS,
+    STATE_REGION,
+    TABLES,
 )
+
+ORDER_DATE_COLS = [
+    "order_purchase_timestamp",
+    "order_approved_at",
+    "order_delivered_carrier_date",
+    "order_delivered_customer_date",
+    "order_estimated_delivery_date",
+]
 
 # ---------------------------------------------------------------------------
 # The cleaning contract. Section 2.2 of the report is generated from this dict,
 # so editing a decision here updates the report's audit table too.
 # ---------------------------------------------------------------------------
 CLEANING_DECISIONS: dict[str, dict[str, str]] = {
-    "coverage_gaps": {
-        "issue": "Two large holes in the weekly series: 29 weeks missing between "
-                 "1990-08-26 and 1991-03-24, and 42 weeks between 1991-05-26 and "
-                 "1992-03-22, plus a 3-week and a 1-week gap.",
-        "evidence": "1,281 distinct week-ending dates span 1,357 calendar weeks.",
-        "decision": "Restrict the main analysis to 1996-01-01 onwards; report the "
-                    "1990-95 sparsity as a separate data-quality exhibit.",
+    "one_to_many_joins": {
+        "issue": "order_items, order_payments and order_reviews are all "
+                 "one-to-many against orders. Joining them directly multiplies "
+                 "an order into several rows.",
+        "evidence": "112,650 items and 103,886 payment records against 99,441 "
+                    "orders; a naive merge yields ~117k rows and silently "
+                    "over-weights multi-item orders in every average.",
+        "decision": "Aggregate each child table to one row per order first "
+                    "(counts, sums, and the attributes of the most expensive "
+                    "item), then join. The analysis grain is one order.",
     },
-    "performances_zero": {
-        "issue": "Statistics.Performances == 0 while Statistics.Attendance > 0, "
-                 "which is structurally impossible.",
-        "evidence": "2,309 rows (7.9%), concentrated in the earlier years.",
-        "decision": "Recode 0 to NaN and raise the boolean flag perf_missing. "
-                    "Never impute; rows are excluded from any statistic that "
-                    "divides by performances.",
+    "customer_key": {
+        "issue": "customer_id is regenerated for every order, so it identifies "
+                 "an order-customer pair rather than a person.",
+        "evidence": "99,441 customer_id values for 96,096 customer_unique_id "
+                    "values; 2,997 people ordered more than once, one of them "
+                    "17 times.",
+        "decision": "Carry customer_unique_id and group on it for repeat "
+                    "behaviour and for train/test splitting, so the same person "
+                    "cannot appear on both sides of the split.",
     },
-    "gross_potential_zero": {
-        "issue": "Statistics.Gross Potential == 0, i.e. missing values coded as "
-                 "zero rather than as blanks.",
-        "evidence": "1,918 rows (6.6%); 837 of them fall in 1996 alone and a "
-                    "further 71 in 2008, so the zeros cluster by reporting era "
-                    "rather than by show.",
-        "decision": "Recode 0 to NaN and raise the boolean flag gp_missing.",
+    "undelivered_orders": {
+        "issue": "Delivery targets are undefined for orders that never "
+                 "reached the customer.",
+        "evidence": "2.98% of orders have no order_delivered_customer_date; "
+                    "status is delivered for 97.0% of rows and the remainder "
+                    "are shipped, cancelled, unavailable or still processing.",
+        "decision": "Delivery targets are computed only for delivered orders "
+                    "with a delivery timestamp; the rest are labelled NaN and "
+                    "excluded from those models, never imputed.",
     },
-    "capacity_censored": {
-        "issue": "Statistics.Capacity is capped at 100 and cannot express the "
-                 "standing-room sales that push Gross Potential above 100%.",
-        "evidence": "1,433 rows have Gross Potential > 100 while Capacity <= 100.",
-        "decision": "Treat 100 as right-censored; flag with capacity_censored and "
-                    "state the censoring wherever capacity is modelled.",
+    "review_duplicates": {
+        "issue": "A few orders carry more than one review record.",
+        "evidence": "99,224 review rows against 98,673 distinct order_id "
+                    "values.",
+        "decision": "Keep the earliest review per order by creation date.",
     },
-    "nominal_dollars": {
-        "issue": "Statistics.Gross is in nominal USD across 26 years, so any "
-                 "level comparison across time confounds real demand with "
-                 "inflation and with ticket-price growth.",
-        "evidence": "Median average ticket price rises from $24.4 (1990) to "
-                    "$93.1 (2015).",
-        "decision": "Base the analysis on scale-free measures (Capacity %, Gross "
-                    "Potential %) and carry Date.Year as an explicit feature; no "
-                    "external deflator is used in the main analysis.",
+    "geolocation_duplicates": {
+        "issue": "The geolocation table holds one row per captured coordinate, "
+                 "not one per postcode, and contains points outside Brazil.",
+        "evidence": "1,000,163 rows for roughly 19k distinct zip prefixes.",
+        "decision": "Collapse to a median latitude/longitude per zip prefix "
+                    "(median resists the stray coordinates) and use it to "
+                    "compute customer-seller great-circle distance.",
     },
-    "title_case_artifacts": {
-        "issue": "Show titles were upper-cased word-by-word, turning possessive "
-                 "apostrophes into 'S (for example, A Doll'S House).",
-        "evidence": "42 of the 820 distinct titles are affected.",
-        "decision": "Normalise 'S to 's into show_name; keep the untouched "
-                    "original in show_name_raw.",
+    "product_missing_attrs": {
+        "issue": "A small number of products carry no category or dimensions.",
+        "evidence": "610 products (1.9%) have a null category name; weight and "
+                    "dimensions are null for 2 products.",
+        "decision": "Label the category 'unknown' rather than dropping the "
+                    "orders, and let the modelling pipeline's imputer handle "
+                    "the numeric gaps so the missingness stays visible.",
     },
-    "multi_theatre_shows": {
-        "issue": "The same title can run in more than one theatre (transfers and "
-                 "revivals), so Show.Name alone is not a production identifier.",
-        "evidence": "27 titles appear in more than one theatre.",
-        "decision": "Identify a production by (show, theatre, run_block), where "
-                    "run_block increments after any absence longer than "
-                    f"{RUN_BLOCK_GAP_WEEKS} weeks.",
+    "coverage_ramp": {
+        "issue": "The platform's first months are a pilot with negligible "
+                 "volume, and the final weeks are truncated mid-cycle.",
+        "evidence": "Sep 2016 to Dec 2016 contribute 326 orders in total "
+                    "against a 2018 run-rate above 6,000 per month; orders "
+                    "after 2018-08-31 are cut off before their reviews land.",
+        "decision": "Restrict the analysis window to 2017-01-01 .. 2018-08-31 "
+                    "and show the ramp-up separately as a coverage exhibit.",
+    },
+    "portuguese_categories": {
+        "issue": "Product categories are in Portuguese.",
+        "evidence": "71 categories, joined via "
+                    "product_category_name_translation.csv.",
+        "decision": "Translate to English for every chart and table; keep the "
+                    "original key for traceability.",
     },
 }
-
-_APOSTROPHE_S = re.compile(r"'S\b")
 
 
 # ---------------------------------------------------------------------------
 # Load + validate
 # ---------------------------------------------------------------------------
-def load_raw(path=DATA_RAW) -> pd.DataFrame:
-    """Read the raw CSV and assert the data contract we documented in Phase 1.
+def load_table(name: str) -> pd.DataFrame:
+    """Read one source table and assert the row count we documented."""
+    if name not in TABLES:
+        raise KeyError(f"Unknown table {name!r}; expected one of {sorted(TABLES)}")
 
-    Raises AssertionError if the file we were given ever changes shape, which
-    protects every downstream number in the report.
-    """
-    df = pd.read_csv(path)
+    kwargs = {}
+    if name == "orders":
+        kwargs["parse_dates"] = ORDER_DATE_COLS
+    elif name == "order_reviews":
+        kwargs["parse_dates"] = ["review_creation_date", "review_answer_timestamp"]
+    elif name == "order_items":
+        kwargs["parse_dates"] = ["shipping_limit_date"]
 
-    assert df.shape == (EXPECTED_RAW_ROWS, EXPECTED_RAW_COLS), (
-        f"Expected {EXPECTED_RAW_ROWS} x {EXPECTED_RAW_COLS}, got {df.shape}"
-    )
-    assert not df.isna().any().any(), "Raw file is documented as having no NaNs"
-    assert not df.duplicated().any(), "Raw file is documented as having no dupes"
-    assert not df.duplicated(subset=NATURAL_KEY).any(), (
-        f"{NATURAL_KEY} is documented as the natural key"
-    )
-
-    df["date"] = pd.to_datetime(df["Date.Full"], format="%m/%d/%Y")
-    assert (df["date"].dt.dayofweek == 6).all(), (
-        "Every observation should be a week ending on a Sunday"
+    df = pd.read_csv(DATA_RAW / TABLES[name], **kwargs)
+    expected = EXPECTED_ROWS[name]
+    assert len(df) == expected, (
+        f"{name}: expected {expected:,} rows, got {len(df):,}. The source data "
+        "has changed and every downstream number is suspect."
     )
     return df
 
 
-# ---------------------------------------------------------------------------
-# Clean
-# ---------------------------------------------------------------------------
-def clean(df: pd.DataFrame) -> pd.DataFrame:
-    """Apply CLEANING_DECISIONS and derive the production identifier.
+def load_all() -> dict[str, pd.DataFrame]:
+    """Read all nine tables."""
+    return {name: load_table(name) for name in TABLES}
 
-    Returns a tidy frame with snake_case analysis columns alongside the original
-    Statistics.* columns, so an auditor can always trace a value back.
+
+# ---------------------------------------------------------------------------
+# Geography
+# ---------------------------------------------------------------------------
+def zip_centroids(geolocation: pd.DataFrame) -> pd.DataFrame:
+    """One median coordinate per zip prefix.
+
+    The raw table is one row per captured point, so a mean would be dragged by
+    the handful of coordinates that fall outside Brazil entirely.
     """
-    out = df.copy()
-
-    # -- title normalisation -------------------------------------------------
-    out["show_name_raw"] = out["Show.Name"]
-    out["show_name"] = out["Show.Name"].str.replace(_APOSTROPHE_S, "'s", regex=True)
-    out["theatre"] = out["Show.Theatre"]
-    out["show_type"] = out["Show.Type"]
-
-    # -- zero-coded missingness ---------------------------------------------
-    out["perf_missing"] = out["Statistics.Performances"].eq(0)
-    out["gp_missing"] = out["Statistics.Gross Potential"].eq(0)
-    out["capacity_censored"] = out["Statistics.Capacity"].eq(100)
-
-    out["performances"] = out["Statistics.Performances"].replace(0, np.nan)
-    out["gross_potential_pct"] = out["Statistics.Gross Potential"].replace(0, np.nan)
-    out["capacity_pct"] = out["Statistics.Capacity"].astype(float)
-    out["attendance"] = out["Statistics.Attendance"].astype(float)
-    out["gross"] = out["Statistics.Gross"].astype(float)
-
-    # -- calendar ------------------------------------------------------------
-    iso = out["date"].dt.isocalendar()
-    out["year"] = out["date"].dt.year
-    out["month"] = out["date"].dt.month
-    out["iso_week"] = iso["week"].astype(int)
-
-    # -- production identity -------------------------------------------------
-    out = out.sort_values(["show_name", "theatre", "date"]).reset_index(drop=True)
-    gap_weeks = out.groupby(["show_name", "theatre"], sort=False)["date"].diff().dt.days.div(7)
-    new_block = gap_weeks.isna() | (gap_weeks > RUN_BLOCK_GAP_WEEKS)
-    out["run_block"] = (
-        new_block.groupby([out["show_name"], out["theatre"]]).cumsum().astype(int)
-    )
-    out["production_id"] = (
-        out["show_name"] + " @ " + out["theatre"] + " #" + out["run_block"].astype(str)
-    )
-
-    return out.sort_values(["date", "show_name"]).reset_index(drop=True)
-
-
-# ---------------------------------------------------------------------------
-# Theatre seat counts
-# ---------------------------------------------------------------------------
-def theatre_seat_counts(df: pd.DataFrame) -> pd.Series:
-    """Recover each theatre's seat count by inverting the capacity identity.
-
-    Statistics.Capacity is the percentage of seats sold, so
-
-        seats == attendance / performances / (capacity_pct / 100)
-
-    Taking the per-theatre median of that quantity recovers seat counts that
-    match the published figures closely (Majestic 1608 vs 1645 actual, Imperial
-    1419 vs 1417 actual). This both validates our reading of the column and
-    gives us a legitimate, leakage-free static feature.
-    """
-    usable = df[(df["performances"] > 0) & (df["capacity_pct"] > 0)]
-    implied = (
-        usable["attendance"] / usable["performances"] / (usable["capacity_pct"] / 100)
-    )
+    g = geolocation[
+        geolocation["geolocation_lat"].between(-34, 6)
+        & geolocation["geolocation_lng"].between(-74, -34)
+    ]
     return (
-        implied.groupby(usable["theatre"])
+        g.groupby("geolocation_zip_code_prefix")[["geolocation_lat", "geolocation_lng"]]
         .median()
-        .round()
-        .astype(int)
-        .rename("theatre_seats")
+        .rename(columns={"geolocation_lat": "lat", "geolocation_lng": "lng"})
+    )
+
+
+def haversine_km(lat1, lng1, lat2, lng2):
+    """Great-circle distance in kilometres, vectorised over numpy arrays."""
+    r = 6371.0
+    p1, p2 = np.radians(lat1), np.radians(lat2)
+    dp = p2 - p1
+    dl = np.radians(lng2) - np.radians(lng1)
+    a = np.sin(dp / 2) ** 2 + np.cos(p1) * np.cos(p2) * np.sin(dl / 2) ** 2
+    return 2 * r * np.arcsin(np.sqrt(a))
+
+
+# ---------------------------------------------------------------------------
+# Aggregate the one-to-many children
+# ---------------------------------------------------------------------------
+def _items_per_order(items: pd.DataFrame, products: pd.DataFrame,
+                     translation: pd.DataFrame, sellers: pd.DataFrame) -> pd.DataFrame:
+    """Collapse order_items (plus product and seller attributes) to one row."""
+    trans = translation.rename(columns={translation.columns[0]: "product_category_name"})
+    prod = products.merge(trans, on="product_category_name", how="left")
+    prod["category"] = (
+        prod["product_category_name_english"]
+        .fillna(prod["product_category_name"])
+        .fillna("unknown")
+    )
+
+    it = items.merge(
+        prod[["product_id", "category", "product_weight_g", "product_length_cm",
+              "product_height_cm", "product_width_cm", "product_photos_qty"]],
+        on="product_id", how="left",
+    ).merge(
+        sellers[["seller_id", "seller_state", "seller_zip_code_prefix"]],
+        on="seller_id", how="left",
+    )
+    it["item_volume_cm3"] = (
+        it["product_length_cm"] * it["product_height_cm"] * it["product_width_cm"]
+    )
+
+    agg = it.groupby("order_id").agg(
+        n_items=("order_item_id", "count"),
+        n_distinct_products=("product_id", "nunique"),
+        n_sellers=("seller_id", "nunique"),
+        total_price=("price", "sum"),
+        total_freight=("freight_value", "sum"),
+        max_item_price=("price", "max"),
+        total_weight_g=("product_weight_g", "sum"),
+        max_volume_cm3=("item_volume_cm3", "max"),
+        total_photos=("product_photos_qty", "sum"),
+    )
+
+    # Attributes of the most expensive item: the one that characterises the order.
+    lead = (
+        it.sort_values(["order_id", "price"], ascending=[True, False])
+        .groupby("order_id")
+        .first()[["category", "seller_state", "seller_zip_code_prefix"]]
+        .rename(columns={"category": "lead_category",
+                         "seller_state": "lead_seller_state",
+                         "seller_zip_code_prefix": "lead_seller_zip"})
+    )
+    return agg.join(lead)
+
+
+def _payments_per_order(payments: pd.DataFrame) -> pd.DataFrame:
+    """Collapse order_payments to one row per order."""
+    agg = payments.groupby("order_id").agg(
+        n_payment_records=("payment_sequential", "count"),
+        total_payment=("payment_value", "sum"),
+        max_installments=("payment_installments", "max"),
+    )
+    # Payment type of the largest single payment on the order.
+    lead = (
+        payments.sort_values(["order_id", "payment_value"], ascending=[True, False])
+        .groupby("order_id")
+        .first()[["payment_type"]]
+        .rename(columns={"payment_type": "lead_payment_type"})
+    )
+    return agg.join(lead)
+
+
+def _reviews_per_order(reviews: pd.DataFrame) -> pd.DataFrame:
+    """Earliest review per order; a handful of orders carry more than one."""
+    r = reviews.sort_values(["order_id", "review_creation_date"])
+    return (
+        r.groupby("order_id")
+        .first()[["review_score", "review_creation_date", "review_answer_timestamp"]]
     )
 
 
 # ---------------------------------------------------------------------------
-# Convenience
+# Build the analysis table
 # ---------------------------------------------------------------------------
-def load_analysis(path=DATA_RAW) -> pd.DataFrame:
-    """Load, clean, attach theatre seat counts, restrict to the analysis window."""
-    df = clean(load_raw(path))
-    df = df.merge(
-        theatre_seat_counts(df), left_on="theatre", right_index=True, how="left"
+def build_orders(tables: dict[str, pd.DataFrame] | None = None) -> pd.DataFrame:
+    """Join the nine tables into one tidy row per order.
+
+    Returns every order, including the 3% that were never delivered; the
+    delivery targets are NaN for those rather than dropped, so the dashboard can
+    still report on order status.
+    """
+    t = tables or load_all()
+
+    df = t["orders"].merge(
+        t["customers"][["customer_id", "customer_unique_id",
+                        "customer_state", "customer_city",
+                        "customer_zip_code_prefix"]],
+        on="customer_id", how="left", validate="one_to_one",
     )
-    mask = df["date"].between(ANALYSIS_START, ANALYSIS_END)
+
+    df = (
+        df.merge(_items_per_order(t["order_items"], t["products"],
+                                  t["category_translation"], t["sellers"]),
+                 left_on="order_id", right_index=True, how="left")
+          .merge(_payments_per_order(t["order_payments"]),
+                 left_on="order_id", right_index=True, how="left")
+          .merge(_reviews_per_order(t["order_reviews"]),
+                 left_on="order_id", right_index=True, how="left")
+    )
+    assert len(df) == EXPECTED_ROWS["orders"], "joins must not change the grain"
+
+    # -- geography -----------------------------------------------------------
+    cent = zip_centroids(t["geolocation"])
+    df = df.join(cent.rename(columns={"lat": "cust_lat", "lng": "cust_lng"}),
+                 on="customer_zip_code_prefix")
+    df = df.join(cent.rename(columns={"lat": "sell_lat", "lng": "sell_lng"}),
+                 on="lead_seller_zip")
+    df["distance_km"] = haversine_km(
+        df["cust_lat"], df["cust_lng"], df["sell_lat"], df["sell_lng"]
+    )
+    df["customer_region"] = df["customer_state"].map(STATE_REGION)
+    df["seller_region"] = df["lead_seller_state"].map(STATE_REGION)
+    df["same_state"] = (df["customer_state"] == df["lead_seller_state"])
+
+    # -- outcome measures (POST-OUTCOME: never model inputs) ------------------
+    delivered = df["order_delivered_customer_date"].notna()
+    df["delivery_days"] = np.where(
+        delivered,
+        (df["order_delivered_customer_date"] - df["order_purchase_timestamp"])
+        .dt.total_seconds() / 86400,
+        np.nan,
+    )
+    df["delay_vs_estimate_days"] = np.where(
+        delivered,
+        (df["order_delivered_customer_date"] - df["order_estimated_delivery_date"])
+        .dt.total_seconds() / 86400,
+        np.nan,
+    )
+    df["is_late"] = np.where(delivered, (df["delay_vs_estimate_days"] > 0).astype(float), np.nan)
+    df["approval_hours"] = (
+        (df["order_approved_at"] - df["order_purchase_timestamp"])
+        .dt.total_seconds() / 3600
+    )
+
+    # -- known at checkout ---------------------------------------------------
+    df["estimated_days"] = (
+        (df["order_estimated_delivery_date"] - df["order_purchase_timestamp"])
+        .dt.total_seconds() / 86400
+    )
+    df["lead_category"] = df["lead_category"].fillna("unknown")
+
+    return df.sort_values("order_purchase_timestamp").reset_index(drop=True)
+
+
+def load_analysis(tables: dict[str, pd.DataFrame] | None = None) -> pd.DataFrame:
+    """Build the order table and restrict it to the analysis window."""
+    df = build_orders(tables)
+    mask = df["order_purchase_timestamp"].between(ANALYSIS_START, ANALYSIS_END)
     return df.loc[mask].reset_index(drop=True)
 
 
 def quality_summary(df: pd.DataFrame) -> pd.DataFrame:
-    """Per-column audit table: distinct values and zero-coded missingness."""
+    """Missingness audit for the columns the analysis actually depends on."""
+    cols = ["order_delivered_customer_date", "order_approved_at", "review_score",
+            "lead_category", "total_price", "total_freight", "total_weight_g",
+            "distance_km", "lead_payment_type", "estimated_days"]
     rows = []
-    for col in ["attendance", "capacity_pct", "gross", "gross_potential_pct", "performances"]:
-        s = df[col]
-        rows.append(
-            {
-                "column": col,
-                "n_missing": int(s.isna().sum()),
-                "pct_missing": round(100 * s.isna().mean(), 2),
-                "n_unique": int(s.nunique()),
-                "min": round(float(s.min()), 1),
-                "median": round(float(s.median()), 1),
-                "max": round(float(s.max()), 1),
-            }
-        )
+    for c in cols:
+        s = df[c]
+        rows.append({
+            "column": c,
+            "n_missing": int(s.isna().sum()),
+            "pct_missing": round(100 * s.isna().mean(), 2),
+            "n_unique": int(s.nunique()),
+        })
     return pd.DataFrame(rows)

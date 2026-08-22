@@ -11,234 +11,262 @@ other.
 """
 from __future__ import annotations
 
-import json
 import sys
+import warnings
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+warnings.filterwarnings("ignore")
 
 import numpy as np
 import pandas as pd
 from sklearn.compose import ColumnTransformer
 from sklearn.dummy import DummyClassifier
+from sklearn.ensemble import HistGradientBoostingClassifier, HistGradientBoostingRegressor
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import (
     average_precision_score, balanced_accuracy_score, mean_absolute_error,
-    r2_score, recall_score, roc_auc_score,
+    precision_score, r2_score, recall_score, roc_auc_score,
 )
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 import config
-from data_load import clean, load_analysis, load_raw, theatre_seat_counts
+from data_load import build_orders, load_all, load_analysis, zip_centroids
 from features import (
-    CATEGORICAL_FEATURES, BOOLEAN_FEATURES, add_same_week_derived,
-    build_features, make_splits, model_features, numeric_features,
+    CATEGORICAL_FEATURES, MODEL_FEATURES, NUMERIC_FEATURES, BOOLEAN_FEATURES,
+    REVIEW_MODEL_FEATURES, assert_no_leakage, build_features, make_splits,
 )
 
-H = config.FORECAST_HORIZON_WEEKS
 S: dict[str, object] = {}
+NUM = NUMERIC_FEATURES + BOOLEAN_FEATURES
 
 
 def pipe(model, numeric):
+    """Preprocessing + model, so no fold ever sees test statistics."""
     return Pipeline([
         ("prep", ColumnTransformer([
-            ("num", Pipeline([("i", SimpleImputer(strategy="median")),
-                              ("s", StandardScaler())]), numeric),
-            ("cat", OneHotEncoder(handle_unknown="ignore", min_frequency=30),
-             CATEGORICAL_FEATURES),
+            ("num", Pipeline([("imp", SimpleImputer(strategy="median")),
+                              ("sc", StandardScaler())]), numeric),
+            ("cat", OneHotEncoder(handle_unknown="ignore", min_frequency=100,
+                                  sparse_output=False), CATEGORICAL_FEATURES),
         ])),
         ("model", model),
     ])
 
 
-def band_of(s):
-    return pd.cut(s, bins=[-np.inf, *config.CAPACITY_BAND_CUTS, np.inf],
-                  labels=config.CAPACITY_BAND_LABELS)
+# ===========================================================================
+# Dataset shape
+# ===========================================================================
+tables = load_all()
+for name, df_ in tables.items():
+    S[f"rows_{name}"] = len(df_)
 
+full = build_orders(tables)
+df = build_features(load_analysis(tables))
 
-# --------------------------------------------------------------------------
-# Dataset shape and quality
-# --------------------------------------------------------------------------
-raw = load_raw()
-full = add_same_week_derived(clean(raw))
-full = full.merge(theatre_seat_counts(full), left_on="theatre", right_index=True, how="left")
-df = build_features(load_analysis())
-
-S["raw_rows"] = len(raw)
-S["raw_cols"] = raw.shape[1]
-S["date_min"] = str(raw["date"].min().date())
-S["date_max"] = str(raw["date"].max().date())
-S["n_weeks"] = int(raw["date"].nunique())
-S["n_shows"] = int(raw["Show.Name"].nunique())
-S["n_theatres"] = int(raw["Show.Theatre"].nunique())
-S["n_productions_full"] = int(full["production_id"].nunique())
+S["n_tables"] = len(tables)
+S["orders_total"] = len(full)
 S["analysis_rows"] = len(df)
-S["analysis_productions"] = int(df["production_id"].nunique())
-S["median_shows_per_week"] = int(full.groupby("date").size().median())
+S["date_min"] = str(full["order_purchase_timestamp"].min().date())
+S["date_max"] = str(full["order_purchase_timestamp"].max().date())
+S["window_start"] = str(config.ANALYSIS_START.date())
+S["window_end"] = str(config.ANALYSIS_END.date())
+S["n_customers_unique"] = int(full["customer_unique_id"].nunique())
+S["n_customer_ids"] = int(full["customer_id"].nunique())
+rep = full.groupby("customer_unique_id").size()
+S["n_repeat_customers"] = int((rep > 1).sum())
+S["pct_repeat_customers"] = round(100 * (rep > 1).mean(), 1)
+S["max_orders_one_customer"] = int(rep.max())
+S["n_sellers"] = int(tables["sellers"]["seller_id"].nunique())
+S["n_products"] = int(tables["products"]["product_id"].nunique())
+S["n_categories"] = int(full["lead_category"].nunique())
+S["n_states"] = int(full["customer_state"].nunique())
 
-S["perf_zero"] = int(full["perf_missing"].sum())
-S["perf_zero_pct"] = round(100 * full["perf_missing"].mean(), 1)
-S["gp_zero"] = int(full["gp_missing"].sum())
-S["gp_zero_pct"] = round(100 * full["gp_missing"].mean(), 1)
-S["gp_zero_1996_pct"] = round(100 * full.loc[full["year"] == 1996, "gp_missing"].mean(), 0)
-S["capacity_censored"] = int(full["capacity_censored"].sum())
-S["gp_over_100"] = int((full["gross_potential_pct"] > 100).sum())
+# order status
+st = full["order_status"].value_counts(normalize=True) * 100
+S["pct_delivered"] = round(float(st["delivered"]), 1)
+S["pct_undelivered"] = round(100 - float(st["delivered"]), 1)
+S["pct_no_delivery_date"] = round(
+    100 * full["order_delivered_customer_date"].isna().mean(), 2)
 
-dates = pd.Series(sorted(full["date"].unique()))
-gaps = dates.diff().dt.days
-S["weeks_missing_total"] = int(((gaps[gaps > 7] // 7) - 1).sum())
+# review coverage
+S["rows_reviews_distinct_orders"] = int(tables["order_reviews"]["order_id"].nunique())
+S["pct_orders_with_review"] = round(100 * df["review_score"].notna().mean(), 1)
+rs = tables["order_reviews"]["review_score"].value_counts(normalize=True) * 100
+S["pct_review_5"] = round(float(rs[5]), 1)
+S["pct_review_4_5"] = round(float(rs[4] + rs[5]), 1)
+S["pct_review_1"] = round(float(rs[1]), 1)
 
-types = full["show_type"].value_counts(normalize=True).mul(100).round(1)
-S["pct_musical"] = float(types["Musical"])
-S["pct_play"] = float(types["Play"])
-S["pct_special"] = float(types["Special"])
+# geography
+cent = zip_centroids(tables["geolocation"])
+S["n_zip_prefixes"] = len(cent)
+S["median_distance_km"] = int(df["distance_km"].median())
+S["pct_same_state"] = round(100 * df["same_state"].mean(), 1)
+S["pct_sellers_sp"] = round(
+    100 * (tables["sellers"]["seller_state"] == "SP").mean(), 1)
+S["pct_customers_sp"] = round(100 * (full["customer_state"] == "SP").mean(), 1)
 
-# --------------------------------------------------------------------------
-# Capacity identity validation
-# --------------------------------------------------------------------------
-PUBLISHED = {"Majestic": 1645, "Imperial": 1417, "Gershwin": 1933, "Broadway": 1761,
-             "Minskoff": 1710, "Palace": 1743, "Ambassador": 1125, "Lunt-Fontanne": 1509}
-seats = theatre_seat_counts(full)
-err = (seats.reindex(PUBLISHED) - pd.Series(PUBLISHED)).abs() / pd.Series(PUBLISHED) * 100
-S["seat_recovery_median_err_pct"] = round(float(err.median()), 1)
-S["seat_recovery_max_err_pct"] = round(float(err.max()), 1)
+# money
+S["median_order_value"] = round(float(df["total_price"].median()), 2)
+S["median_freight"] = round(float(df["total_freight"].median()), 2)
+S["median_freight_ratio"] = round(float(df["freight_ratio"].median()), 3)
+S["pct_credit_card"] = round(
+    100 * (df["lead_payment_type"] == "credit_card").mean(), 1)
+S["pct_installments_gt1"] = round(100 * (df["max_installments"] > 1).mean(), 1)
 
-chk = full.dropna(subset=["performances", "theatre_seats"]).copy()
-recon = 100 * chk["attendance"] / (chk["theatre_seats"] * chk["performances"])
-S["capacity_reconstruction_median_err_pp"] = round(float((recon - chk["capacity_pct"]).abs().median()), 2)
+# ===========================================================================
+# Delivery behaviour and the drift
+# ===========================================================================
+d = df.dropna(subset=["target_delivery_days"])
+S["delivery_median_days"] = round(float(d["target_delivery_days"].median()), 1)
+S["delivery_mean_days"] = round(float(d["target_delivery_days"].mean()), 1)
+S["delivery_p90_days"] = round(float(d["target_delivery_days"].quantile(0.9)), 1)
+S["late_base_rate_pct"] = round(100 * float(df["target_is_late"].mean()), 2)
+S["always_ontime_acc_pct"] = round(100 - S["late_base_rate_pct"], 2)
+S["low_review_base_pct"] = round(100 * float(df["target_low_review"].mean()), 2)
+S["repeat_base_pct"] = round(100 * float(df["target_repeat"].mean()), 2)
+S["repeat_horizon_days"] = config.REPEAT_HORIZON_DAYS
 
-# --------------------------------------------------------------------------
-# Temporal
-# --------------------------------------------------------------------------
-market = full.groupby("date").agg(gross=("gross", "sum"), productions=("production_id", "nunique"))
-S["gross_911_before_m"] = round(float(market.loc["2001-09-09", "gross"]) / 1e6, 2)
-S["gross_911_week_m"] = round(float(market.loc["2001-09-16", "gross"]) / 1e6, 2)
-S["drop_911_pct"] = round(100 * (market.loc["2001-09-16", "gross"] / market.loc["2001-09-09", "gross"] - 1), 0)
-S["strike_productions_before"] = int(market.loc["2007-11-04", "productions"])
-S["strike_productions"] = int(market.loc["2007-11-18", "productions"])
-S["strike_gross_before_m"] = round(float(market.loc["2007-11-04", "gross"]) / 1e6, 1)
-S["strike_gross_m"] = round(float(market.loc["2007-11-18", "gross"]) / 1e6, 1)
+monthly = d.groupby(d["order_purchase_timestamp"].dt.to_period("M")).agg(
+    mean_days=("target_delivery_days", "mean"), late=("target_is_late", "mean"))
+S["lead_peak_month"] = str(monthly["mean_days"].idxmax())
+S["lead_peak_days"] = round(float(monthly["mean_days"].max()), 1)
+S["lead_trough_month"] = str(monthly["mean_days"].idxmin())
+S["lead_trough_days"] = round(float(monthly["mean_days"].min()), 1)
+S["late_peak_month"] = str(monthly["late"].idxmax())
+S["late_peak_pct"] = round(100 * float(monthly["late"].max()), 1)
+S["late_trough_month"] = str(monthly["late"].idxmin())
+S["late_trough_pct"] = round(100 * float(monthly["late"].min()), 2)
 
-by_week = df.groupby("iso_week")["capacity_pct"].median()
-by_month = df.groupby("month")["capacity_pct"].median()
-S["cap_week_52_53"] = round(float(by_week.loc[[52, 53]].mean()), 0)
-S["cap_week_36_44"] = round(float(by_week.loc[[36, 44]].mean()), 0)
-S["week_seasonal_contrast_pp"] = round(S["cap_week_52_53"] - S["cap_week_36_44"], 0)
-S["month_dec_sep_contrast_pp"] = round(float(by_month.loc[12] - by_month.loc[9]), 1)
+# correlations with checkout-time features
+for c in ["estimated_days", "log_distance", "total_freight", "log_weight"]:
+    S[f"corr_leadtime_{c}"] = round(float(d[c].corr(d["target_delivery_days"])), 3)
 
-yearly = df.groupby("year").agg(price=("avg_ticket_price", "median"), cap=("capacity_pct", "median"))
-S["price_1996"] = round(float(yearly.loc[1996, "price"]), 1)
-S["price_2015"] = round(float(yearly.loc[2015, "price"]), 1)
-S["price_growth_pct"] = round(100 * (yearly.loc[2015, "price"] / yearly.loc[1996, "price"] - 1), 0)
-S["cap_1996"] = round(float(yearly.loc[1996, "cap"]), 0)
-S["cap_2015"] = round(float(yearly.loc[2015, "cap"]), 0)
+# review vs delivery
+r = df.dropna(subset=["target_low_review", "target_is_late"])
+S["low_review_when_late_pct"] = round(
+    100 * float(r.loc[r["target_is_late"] == 1, "target_low_review"].mean()), 1)
+S["low_review_when_ontime_pct"] = round(
+    100 * float(r.loc[r["target_is_late"] == 0, "target_low_review"].mean()), 1)
+S["low_review_late_multiplier"] = round(
+    S["low_review_when_late_pct"] / S["low_review_when_ontime_pct"], 1)
 
-# --------------------------------------------------------------------------
-# Lifecycles
-# --------------------------------------------------------------------------
-runs = df.groupby(["production_id", "show_type"]).agg(weeks=("date", "size"), end=("date", "max")).reset_index()
-S["run_median_weeks"] = int(runs["weeks"].median())
-S["run_p90_weeks"] = int(runs["weeks"].quantile(0.9))
-S["run_max_weeks"] = int(runs["weeks"].max())
-S["run_censored"] = int((runs["end"] >= df["date"].max() - pd.Timedelta(weeks=1)).sum())
-S["autocorr_lag1"] = round(float(df["capacity_pct"].corr(df.groupby("production_id")["capacity_pct"].shift(1))), 3)
+# ===========================================================================
+# Splits
+# ===========================================================================
+sp = make_splits(df)
+S["train_rows"] = len(sp["train"])
+S["val_rows"] = len(sp["val"])
+S["test_rows"] = len(sp["test"])
+S["straddling_customers"] = sp["n_straddling_customers"]
+S["train_end"] = str(config.TRAIN_END.date())
+S["val_end"] = str(config.VAL_END.date())
+S["n_features_checkout"] = len(MODEL_FEATURES)
+S["n_features_delivery"] = len(REVIEW_MODEL_FEATURES)
 
-# --------------------------------------------------------------------------
+train_mean = sp["train"]["target_delivery_days"].mean()
+te_d = sp["test"].dropna(subset=["target_delivery_days"])
+S["train_mean_delivery"] = round(float(train_mean), 2)
+S["test_mean_delivery"] = round(float(te_d["target_delivery_days"].mean()), 2)
+S["delivery_drift_days"] = round(S["test_mean_delivery"] - S["train_mean_delivery"], 2)
+
+# ===========================================================================
 # Candidate probes
-# --------------------------------------------------------------------------
-splits = make_splits(df)
-S["train_rows"] = len(splits["train"])
-S["test_rows"] = len(splits["test"])
-S["straddling_productions"] = splits["n_straddling_productions"]
+# ===========================================================================
+def clf_probe(target, feats, numeric, regime, prefix):
+    assert_no_leakage(feats, regime)
+    tr = sp["train"].dropna(subset=[target])
+    te = sp["test"].dropna(subset=[target])
+    y = te[target].astype(int)
+    S[f"{prefix}_train_rows"] = len(tr)
+    S[f"{prefix}_test_rows"] = len(te)
+    S[f"{prefix}_test_positive_pct"] = round(100 * float(y.mean()), 2)
 
-FEATS = model_features(H)
-tr = splits["train"].dropna(subset=["target_band", f"capacity_lag{H}"])
-te = splits["test"].dropna(subset=["target_band", f"capacity_lag{H}"])
-S["n_features"] = len(FEATS)
-S["model_train_rows"] = len(tr)
-S["model_test_rows"] = len(te)
+    dummy = DummyClassifier(strategy="most_frequent").fit(tr[feats], tr[target])
+    S[f"{prefix}_majority_acc"] = round(
+        float((dummy.predict(te[feats]) == y).mean()), 3)
 
-# horizon sweep
-sweep = {}
-for h in config.HORIZONS:
-    f_h, n_h = model_features(h), numeric_features(h)
-    a = splits["train"].dropna(subset=["target_band", f"capacity_lag{h}"])
-    b = splits["test"].dropna(subset=["target_band", f"capacity_lag{h}"])
-    c = pipe(LogisticRegression(max_iter=2000, random_state=config.SEED), n_h).fit(a[f_h], a["target_band"])
-    r = pipe(LinearRegression(), n_h).fit(a[f_h], a["target_capacity"])
-    sweep[h] = {
-        "persistence_acc": round(float((band_of(b[f"capacity_lag{h}"]) == b["target_band"]).mean()), 3),
-        "logreg_acc": round(float((c.predict(b[f_h]) == b["target_band"]).mean()), 3),
-        "persistence_mae": round(float(mean_absolute_error(b["target_capacity"], b[f"capacity_lag{h}"])), 2),
-        "linreg_mae": round(float(mean_absolute_error(b["target_capacity"], r.predict(b[f_h]))), 2),
-    }
-S["horizon_sweep"] = sweep
+    for tag, model in [
+        ("logreg", LogisticRegression(max_iter=1000, class_weight="balanced",
+                                      random_state=config.SEED)),
+        ("hgb", HistGradientBoostingClassifier(max_iter=200, class_weight="balanced",
+                                               random_state=config.SEED)),
+    ]:
+        m = pipe(model, numeric).fit(tr[feats], tr[target])
+        p = m.predict_proba(te[feats])[:, 1]
+        pred = (p >= 0.5).astype(int)
+        S[f"{prefix}_{tag}_roc"] = round(float(roc_auc_score(y, p)), 3)
+        S[f"{prefix}_{tag}_prauc"] = round(float(average_precision_score(y, p)), 3)
+        S[f"{prefix}_{tag}_balacc"] = round(float(balanced_accuracy_score(y, pred)), 3)
+        S[f"{prefix}_{tag}_recall"] = round(float(recall_score(y, pred)), 3)
+        S[f"{prefix}_{tag}_precision"] = round(float(precision_score(y, pred)), 3)
+    S[f"{prefix}_prauc_floor"] = round(float(y.mean()), 3)
+    S[f"{prefix}_prauc_lift"] = round(S[f"{prefix}_hgb_prauc"] / float(y.mean()), 1)
 
-# leakage demonstration
-leak = ["Statistics.Attendance", "Statistics.Performances"]
-for tag, extra in [("safe", []), ("leak1", leak[:1]), ("leak2", leak)]:
-    p = pipe(LogisticRegression(max_iter=2000, random_state=config.SEED),
-             numeric_features(H) + extra).fit(tr[FEATS + extra], tr["target_band"])
-    S[f"acc_{tag}"] = round(float((p.predict(te[FEATS + extra]) == te["target_band"]).mean()), 3)
 
-# candidate 1
-dummy = DummyClassifier(strategy="most_frequent").fit(tr[FEATS], tr["target_band"])
-S["c1_majority_acc"] = round(float((dummy.predict(te[FEATS]) == te["target_band"]).mean()), 3)
-S["c1_persistence_acc"] = sweep[H]["persistence_acc"]
-clf = pipe(LogisticRegression(max_iter=2000, random_state=config.SEED), numeric_features(H))
-clf.fit(tr[FEATS], tr["target_band"])
-pred = clf.predict(te[FEATS])
-S["c1_logreg_acc"] = round(float((pred == te["target_band"]).mean()), 3)
-S["c1_balanced_acc"] = round(float(balanced_accuracy_score(te["target_band"], pred)), 3)
+# C1B - late delivery, at checkout
+clf_probe("target_is_late", MODEL_FEATURES, NUM, "at_checkout", "c1b")
+# C2 - low review, at delivery
+clf_probe("target_low_review", REVIEW_MODEL_FEATURES,
+          NUM + config.DELIVERY_OUTCOME_FEATURES, "at_delivery", "c2")
+# C2 without the delivery outcome, to size what it contributes
+clf_probe("target_low_review", MODEL_FEATURES, NUM, "at_checkout", "c2_checkout")
+# C3 - repeat purchase
+clf_probe("target_repeat", MODEL_FEATURES, NUM, "at_checkout", "c3")
 
-unseen = splits["test_unseen_productions"].dropna(subset=["target_band", f"capacity_lag{H}"])
-S["c1_acc_unseen_productions"] = round(float((clf.predict(unseen[FEATS]) == unseen["target_band"]).mean()), 3)
-S["c1_unseen_rows"] = len(unseen)
+# C1A - lead time regression
+assert_no_leakage(MODEL_FEATURES, "at_checkout")
+tr = sp["train"].dropna(subset=["target_delivery_days"])
+y = te_d["target_delivery_days"]
+S["c1a_train_rows"] = len(tr)
+S["c1a_test_rows"] = len(te_d)
+preds = {
+    "mean": np.full(len(y), tr["target_delivery_days"].mean()),
+    "promise": te_d["estimated_days"].values,
+}
+for tag, model in [("ridge", Ridge(alpha=1.0, random_state=config.SEED)),
+                   ("hgb", HistGradientBoostingRegressor(max_iter=200,
+                                                         random_state=config.SEED))]:
+    preds[tag] = pipe(model, NUM).fit(tr[MODEL_FEATURES],
+                                      tr["target_delivery_days"]).predict(te_d[MODEL_FEATURES])
+for tag, p in preds.items():
+    S[f"c1a_{tag}_mae"] = round(float(mean_absolute_error(y, p)), 2)
+    S[f"c1a_{tag}_rmse"] = round(float(np.sqrt(((y - p) ** 2).mean())), 2)
+    S[f"c1a_{tag}_r2"] = round(float(r2_score(y, p)), 3)
+S["c1a_mae_gain_pct"] = round(100 * (1 - S["c1a_hgb_mae"] / S["c1a_mean_mae"]), 1)
 
-reg = pipe(LinearRegression(), numeric_features(H)).fit(tr[FEATS], tr["target_capacity"])
-rp = reg.predict(te[FEATS])
-S["c1_mean_mae"] = round(float(mean_absolute_error(te["target_capacity"],
-                          np.full(len(te), tr["target_capacity"].mean()))), 2)
-S["c1_persistence_mae"] = sweep[H]["persistence_mae"]
-S["c1_linreg_mae"] = round(float(mean_absolute_error(te["target_capacity"], rp)), 2)
-S["c1_linreg_r2"] = round(float(r2_score(te["target_capacity"], rp)), 3)
-S["c1_persistence_r2"] = round(float(r2_score(te["target_capacity"], te[f"capacity_lag{H}"])), 3)
-S["c1_mae_gain_pct"] = round(100 * (1 - S["c1_linreg_mae"] / S["c1_persistence_mae"]), 1)
+# leakage demonstration: same model, same split, forbidden column added
+tr_l = sp["train"].dropna(subset=["target_is_late"])
+te_l = sp["test"].dropna(subset=["target_is_late"])
+leak_feats = MODEL_FEATURES + ["delivery_days"]
+m = pipe(LogisticRegression(max_iter=1000, class_weight="balanced",
+                            random_state=config.SEED), NUM + ["delivery_days"])
+m.fit(tr_l[leak_feats], tr_l["target_is_late"])
+pl = m.predict_proba(te_l[leak_feats])[:, 1]
+S["c1b_leaked_roc"] = round(float(roc_auc_score(te_l["target_is_late"], pl)), 3)
+S["c1b_leaked_balacc"] = round(float(balanced_accuracy_score(
+    te_l["target_is_late"], (pl >= 0.5).astype(int))), 3)
 
-# candidate 2
-lab = df.dropna(subset=["target_closes_soon"])
-S["c2_positive_rate"] = round(float(lab["target_closes_soon"].mean()), 3)
-S["c2_censored_rows"] = int(df["is_right_censored"].sum())
-c_tr = splits["train"].dropna(subset=["target_closes_soon", f"capacity_lag{H}"])
-c_te = splits["test"].dropna(subset=["target_closes_soon", f"capacity_lag{H}"])
-cl = pipe(LogisticRegression(max_iter=2000, class_weight="balanced", random_state=config.SEED),
-          numeric_features(H)).fit(c_tr[FEATS], c_tr["target_closes_soon"])
-proba = cl.predict_proba(c_te[FEATS])[:, 1]
-pc = (proba >= 0.5).astype(int)
-yc = c_te["target_closes_soon"].astype(int)
-S["c2_test_positive_rate"] = round(float(yc.mean()), 3)
-S["c2_accuracy"] = round(float((pc == yc).mean()), 3)
-S["c2_always_open_acc"] = round(float(1 - yc.mean()), 3)
-S["c2_balanced_acc"] = round(float(balanced_accuracy_score(yc, pc)), 3)
-S["c2_roc_auc"] = round(float(roc_auc_score(yc, proba)), 3)
-S["c2_pr_auc"] = round(float(average_precision_score(yc, proba)), 3)
-S["c2_minority_recall"] = round(float(recall_score(yc, pc)), 3)
+# unseen-customer generalisation for the primary classifier
+un = sp["test_unseen_customers"].dropna(subset=["target_low_review"])
+m = pipe(HistGradientBoostingClassifier(max_iter=200, class_weight="balanced",
+                                        random_state=config.SEED),
+         NUM + config.DELIVERY_OUTCOME_FEATURES)
+m.fit(sp["train"].dropna(subset=["target_low_review"])[REVIEW_MODEL_FEATURES],
+      sp["train"].dropna(subset=["target_low_review"])["target_low_review"])
+pu = m.predict_proba(un[REVIEW_MODEL_FEATURES])[:, 1]
+S["c2_unseen_rows"] = len(un)
+S["c2_unseen_prauc"] = round(float(average_precision_score(
+    un["target_low_review"].astype(int), pu)), 3)
 
-# candidate 3
-cold = df[df["is_opening_month"]]
-CN = ["theatre_seats", "n_shows_running", "iso_week", "month", "year", "run_week_index"]
-CF = CN + BOOLEAN_FEATURES + CATEGORICAL_FEATURES
-c3tr, c3te = cold[cold["date"] <= config.TRAIN_END], cold[cold["date"] > config.VAL_END]
-c3 = pipe(LinearRegression(), CN).fit(c3tr[CF], np.log(c3tr["gross"]))
-S["c3_rows"] = len(cold)
-S["c3_r2"] = round(float(r2_score(np.log(c3te["gross"]), c3.predict(c3te[CF]))), 3)
 
-# --------------------------------------------------------------------------
+# ===========================================================================
 if __name__ == "__main__":
     out = config.PROJECT_ROOT / "report" / "stats.txt"
-    lines = [f"{k:38s} {json.dumps(v) if isinstance(v, dict) else v}" for k, v in S.items()]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    lines = [f"{k:34s} {v}" for k, v in S.items()]
     out.write_text("\n".join(lines), encoding="utf-8")
     print("\n".join(lines))
-    print(f"\nwrote {out}")
+    print(f"\nwrote {out}  ({len(S)} values)")

@@ -7,19 +7,30 @@ __pycache__/
 # --- Jupyter ---------------------------------------------------------------
 .ipynb_checkpoints/
 
-# --- Derived data (regenerate by running the notebooks) --------------------
-data/processed/
+# --- Data -------------------------------------------------------------------
+# The nine raw Olist tables total 121 MB (geolocation alone is 61 MB) and the
+# SQLite build is 108 MB, past GitHub's per-file limit. They are course data
+# from Canvas; the README says where to put them.
+data/raw/
+IT5006_Project-Data/
+
+# Derived data is ignored by default, with one deliberate exception: the 4 MB
+# artifact the deployed dashboard reads. Rebuilding it needs the raw tables,
+# which are not in the repository, so the app could not start without it.
+# Note the trailing /* rather than /: git cannot re-include a file whose parent
+# directory has itself been excluded, so the negation would silently do nothing.
+data/processed/*
+!data/processed/orders_dashboard.parquet
 
 # --- Course materials, not ours to redistribute ----------------------------
 # The assignment brief, the reference PDFs and the sample reports were provided
-# by the course. data/raw/broadway_clean.csv is committed so the repository is
-# self-contained and Streamlit Cloud can build from it; this root-level copy is
-# the original drop and would only be a duplicate.
+# by the course.
 /broadway_clean.csv
 /phase 1 requirements.docx
 /NIBRS_DataDictionary.pdf
 /nibrs_diagram.pdf
 sample reports (for reference only)/
+report/Group10_Milestone1_Report.pdf
 
 # --- Report -----------------------------------------------------------------
 # Only the compiled PDF and its figures are tracked. The LaTeX sources are kept

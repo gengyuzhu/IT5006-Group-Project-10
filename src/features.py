@@ -1,22 +1,30 @@
 """
-Feature engineering for the Broadway weekly panel.
+Feature engineering for the Olist order table.
 
 Leakage policy
 --------------
-Statistics.Capacity is not an independent measurement. It is an identity:
+Prediction time for every candidate problem is **the moment the order is
+placed**. That single decision determines what is admissible:
 
-    capacity_pct == attendance / (theatre_seats * performances) * 100
+* `order_delivered_customer_date` and `order_delivered_carrier_date` *define*
+  the delivery outcome, so they can never be predictors of it.
+* `review_score` and its timestamps are written after the customer has lived
+  through the order.
+* `order_approved_at` and `shipping_limit_date` are only known once fulfilment
+  has started, which is after checkout. The brief calls approval "usually safe";
+  we exclude it anyway, because a model meant to run at checkout would not have
+  it, and the cost of including it is unmeasurable optimism.
+* `order_estimated_delivery_date` **is** admissible: the customer is shown that
+  promise at checkout, so it exists before the outcome and is in fact the single
+  most useful feature available.
 
-Any same-week attendance, gross or gross-potential measure therefore
-reconstructs the target almost exactly. This is the single largest leakage
-risk in this dataset and the reason a careless model can score above 95% here.
-Every builder below is annotated LEAKAGE-SAFE or SAME-WEEK-ONLY, and
-assert_no_leakage() is the gate that model code must pass.
+`assert_no_leakage()` is the gate every modelling cell must pass, checked
+against `config.POST_OUTCOME_FORBIDDEN`.
 
-The chronological + production-grouped split in make_splits() is this dataset's
-analogue of the customer_unique_id grouping warning in the project brief: a long
-run such as Phantom of the Opera contributes hundreds of rows, so a random split
-would put a production's own neighbouring weeks on both sides of the divide.
+The split in `make_splits()` is chronological *and* grouped on
+`customer_unique_id`. The brief warns that `customer_id` is regenerated per
+order and is therefore not a person; splitting on rows would let the same buyer
+appear on both sides.
 """
 from __future__ import annotations
 
@@ -24,169 +32,107 @@ import numpy as np
 import pandas as pd
 
 from config import (
-    FORECAST_HORIZON_WEEKS,
-    HORIZONS,
-    CAPACITY_BAND_CUTS,
-    CAPACITY_BAND_LABELS,
-    CLOSURE_HORIZON_WEEKS,
-    SAME_WEEK_FORBIDDEN,
+    DELIVERY_OUTCOME_FEATURES,
+    LEAKAGE_REGIMES,
+    LOW_REVIEW_MAX_SCORE,
+    REPEAT_HORIZON_DAYS,
     TRAIN_END,
     VAL_END,
 )
-
-LAGS = (1, 2, 3, 4, 5, 6, 7, 8)
-
-
-# ---------------------------------------------------------------------------
-# Same-week derived quantities (EDA / dashboard only, never model inputs)
-# ---------------------------------------------------------------------------
-def add_same_week_derived(df: pd.DataFrame) -> pd.DataFrame:
-    """SAME-WEEK-ONLY. Descriptive quantities for EDA and the dashboard.
-
-    These are explicitly listed in config.SAME_WEEK_FORBIDDEN and must never be
-    passed to a model that predicts capacity or gross.
-    """
-    out = df.copy()
-    out["avg_ticket_price"] = out["gross"] / out["attendance"].replace(0, np.nan)
-    out["seats_per_perf"] = out["attendance"] / out["performances"]
-    return out
 
 
 # ---------------------------------------------------------------------------
 # Calendar
 # ---------------------------------------------------------------------------
 def add_calendar(df: pd.DataFrame) -> pd.DataFrame:
-    """LEAKAGE-SAFE. Known from the calendar alone, arbitrarily far in advance."""
+    """LEAKAGE-SAFE. Everything here is known the instant the order is placed."""
     out = df.copy()
-    out["is_holiday_week"] = out["iso_week"].isin([51, 52, 53])
-    out["is_summer"] = out["month"].isin([7, 8])
-    out["is_jan_slump"] = out["iso_week"].isin([4, 5, 6])
-    out["is_tony_season"] = out["month"].eq(6)
+    ts = out["order_purchase_timestamp"]
+    out["purchase_year"] = ts.dt.year
+    out["purchase_month"] = ts.dt.month
+    out["purchase_dow"] = ts.dt.dayofweek
+    out["purchase_hour"] = ts.dt.hour
+    out["purchase_week"] = ts.dt.isocalendar().week.astype(int)
+    out["is_weekend"] = out["purchase_dow"].isin([5, 6])
+    out["is_business_hours"] = out["purchase_hour"].between(9, 18)
+    # Black Friday falls in late November and is the platform's largest spike.
+    out["is_nov_peak"] = (out["purchase_month"] == 11) & (ts.dt.day >= 20)
     return out
 
 
 # ---------------------------------------------------------------------------
-# Run state
+# Order composition
 # ---------------------------------------------------------------------------
-def add_run_state(df: pd.DataFrame) -> pd.DataFrame:
-    """LEAKAGE-SAFE. How far into its run a production is, as of this week.
-
-    Uses only the production's own past, never its eventual run length.
-    """
-    out = df.sort_values(["production_id", "date"]).copy()
-    grp = out.groupby("production_id", sort=False)
-    out["run_week_index"] = grp.cumcount() + 1
-    out["weeks_since_open"] = (
-        (out["date"] - grp["date"].transform("min")).dt.days // 7
-    )
-    out["is_opening_month"] = out["run_week_index"] <= 4
-    return out.sort_values(["date", "show_name"]).reset_index(drop=True)
-
-
-# ---------------------------------------------------------------------------
-# Lags
-# ---------------------------------------------------------------------------
-def add_lags(df: pd.DataFrame) -> pd.DataFrame:
-    """LEAKAGE-SAFE. Prior-week values within the same production.
-
-    A lag is only valid when the previous observation really is the previous
-    calendar week; after a break in the run the lag is set to NaN rather than
-    silently reaching across the gap.
-    """
-    out = df.sort_values(["production_id", "date"]).copy()
-    grp = out.groupby("production_id", sort=False)
-
-    for lag in LAGS:
-        contiguous = grp["date"].diff(lag).dt.days.eq(7 * lag)
-        for src, name in [
-            ("capacity_pct", "capacity_lag"),
-            ("gross", "gross_lag"),
-            ("gross_potential_pct", "gp_lag"),
-        ]:
-            out[f"{name}{lag}"] = grp[src].shift(lag).where(contiguous)
-
-    # Rolling summaries are horizon-specific: a model forecasting h weeks ahead
-    # may only look at weeks t-h .. t-h-3, so each horizon gets its own window.
-    for h in HORIZONS:
-        window = [f"capacity_lag{i}" for i in range(h, h + 4)]
-        out[f"cap_h{h}_roll_mean"] = out[window].mean(axis=1)
-        out[f"cap_h{h}_roll_std"] = out[window].std(axis=1)
-        out[f"cap_h{h}_trend"] = out[window[0]] - out[window[-1]]
-
-    return out.sort_values(["date", "show_name"]).reset_index(drop=True)
+def add_basket(df: pd.DataFrame) -> pd.DataFrame:
+    """LEAKAGE-SAFE. What the customer put in the basket and what it cost."""
+    out = df.copy()
+    price = out["total_price"].replace(0, np.nan)
+    out["freight_ratio"] = out["total_freight"] / price
+    out["price_per_item"] = out["total_price"] / out["n_items"].replace(0, np.nan)
+    out["weight_per_item"] = out["total_weight_g"] / out["n_items"].replace(0, np.nan)
+    out["is_multi_seller"] = out["n_sellers"] > 1
+    out["log_price"] = np.log1p(out["total_price"])
+    out["log_weight"] = np.log1p(out["total_weight_g"])
+    out["log_distance"] = np.log1p(out["distance_km"])
+    return out
 
 
 # ---------------------------------------------------------------------------
-# Market context
+# The promise made at checkout
 # ---------------------------------------------------------------------------
-def add_market_context(df: pd.DataFrame) -> pd.DataFrame:
-    """LEAKAGE-SAFE. State of the whole Broadway market in the *previous* week.
+def add_promise(df: pd.DataFrame) -> pd.DataFrame:
+    """LEAKAGE-SAFE. The delivery window quoted to the customer at checkout.
 
-    n_shows_running is same-week but is a scheduling fact known before the week
-    opens, not an outcome, so it is admissible.
+    `estimated_days` is shown on the order confirmation, so it precedes the
+    outcome. It also encodes whatever Olist's own routing model knew about the
+    shipment, which is why it dominates the feature importance.
     """
     out = df.copy()
-    weekly = (
-        out.groupby("date")
-        .agg(n_shows_running=("production_id", "nunique"), market_gross=("gross", "sum"))
-        .sort_index()
-    )
-    weekly["market_gross_lag1"] = weekly["market_gross"].shift(1)
-    weekly["market_capacity_lag1"] = (
-        out.groupby("date")["capacity_pct"].median().sort_index().shift(1)
-    )
-    return out.merge(
-        weekly[["n_shows_running", "market_gross_lag1", "market_capacity_lag1"]],
-        left_on="date",
-        right_index=True,
-        how="left",
-    )
+    out["estimated_days"] = out["estimated_days"].astype(float)
+    out["long_promise"] = out["estimated_days"] > out["estimated_days"].median()
+    return out
 
 
 # ---------------------------------------------------------------------------
 # Targets
 # ---------------------------------------------------------------------------
 def add_targets(df: pd.DataFrame) -> pd.DataFrame:
-    """Candidate 1 (upcoming-week demand) and Candidate 2 (closure risk) targets.
+    """Candidate 1 (delivery, dual framing), 2 (review) and 3 (repeat purchase).
 
-    Candidate 1 predicts a row's own capacity from weeks t-h and earlier, where
-    h is the forecast horizon. A general manager commits marketing spend and
-    TKTS allocation roughly a month before the week plays, so h = 4 is the point
-    at which the decision is actually taken; numeric_features(h) enforces the
-    corresponding lag window.
-
-    Because the target is week t's own capacity, every same-week column in
-    SAME_WEEK_FORBIDDEN is a genuine leak rather than a modelling preference:
-    attendance, gross and performances for week t are all outcomes of week t and
-    are unknown when the decision is made.
+    Targets are NaN wherever the outcome is genuinely unobservable - an order
+    that never arrived, a customer who left no review, or an order too close to
+    the end of the data for a 90-day repeat window to have closed. None of these
+    is defaulted to a negative label, which would manufacture signal.
     """
-    out = df.sort_values(["production_id", "date"]).copy()
-    grp = out.groupby("production_id", sort=False)
+    out = df.copy()
 
-    # -- Candidate 1: this week's capacity, regression and 3-band classification
-    out["target_capacity"] = out["capacity_pct"]
-    out["target_band"] = pd.cut(
-        out["target_capacity"],
-        bins=[-np.inf, CAPACITY_BAND_CUTS[0], CAPACITY_BAND_CUTS[1], np.inf],
-        labels=CAPACITY_BAND_LABELS,
-    )
-    # Only rows with a genuine preceding week are predictable at all.
-    out["is_predictable"] = out["capacity_lag1"].notna()
+    # -- Candidate 1: delivery performance, framed twice
+    out["target_delivery_days"] = out["delivery_days"]
+    out["target_is_late"] = out["is_late"]
 
-    # -- Candidate 2: does the production close within the horizon?
-    # Right-censored: if the data ends before we could have observed a closure,
-    # the label is unknowable and must stay NaN rather than default to "no".
-    run_end = grp["date"].transform("max")
-    weeks_to_close = (run_end - out["date"]).dt.days // 7
-    data_end = out["date"].max()
-    observable = ((data_end - out["date"]).dt.days // 7) >= CLOSURE_HORIZON_WEEKS
-    out["weeks_to_close"] = weeks_to_close
-    out["is_right_censored"] = ~observable
-    out["target_closes_soon"] = (
-        (weeks_to_close < CLOSURE_HORIZON_WEEKS).where(observable).astype("float")
+    # -- Candidate 2: low satisfaction
+    out["target_low_review"] = np.where(
+        out["review_score"].notna(),
+        (out["review_score"] <= LOW_REVIEW_MAX_SCORE).astype(float),
+        np.nan,
     )
 
-    return out.sort_values(["date", "show_name"]).reset_index(drop=True)
+    # -- Candidate 3: does this buyer come back within the horizon?
+    ts = out["order_purchase_timestamp"]
+    nxt = (
+        out.sort_values(["customer_unique_id", "order_purchase_timestamp"])
+        .groupby("customer_unique_id")["order_purchase_timestamp"]
+        .shift(-1)
+        .reindex(out.index)
+    )
+    gap_days = (nxt - ts).dt.total_seconds() / 86400
+    observable = (out["order_purchase_timestamp"].max() - ts).dt.days >= REPEAT_HORIZON_DAYS
+    out["days_to_next_order"] = gap_days
+    out["repeat_is_censored"] = ~observable
+    out["target_repeat"] = np.where(
+        observable, (gap_days <= REPEAT_HORIZON_DAYS).fillna(False).astype(float), np.nan
+    )
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -194,91 +140,94 @@ def add_targets(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
     """Run every builder in dependency order."""
-    out = add_same_week_derived(df)
-    out = add_calendar(out)
-    out = add_run_state(out)
-    out = add_lags(out)
-    out = add_market_context(out)
+    out = add_calendar(df)
+    out = add_basket(out)
+    out = add_promise(out)
     out = add_targets(out)
     return out
 
 
-# Feature sets a model is allowed to see. Kept here rather than in a notebook so
-# there is a single auditable list.
-#
-# Features that do not depend on the forecast horizon: calendar facts, run
-# state, and static theatre attributes are all knowable arbitrarily far ahead.
-HORIZON_FREE_NUMERIC = [
-    "run_week_index", "weeks_since_open",
-    "theatre_seats", "n_shows_running",
-    "iso_week", "month", "year",
+# ---------------------------------------------------------------------------
+# Feature sets a model is allowed to see
+# ---------------------------------------------------------------------------
+# Deliberately free of exact duplicates. The first draft carried total_price
+# *and* log_price *and* total_payment (which is price + freight), plus
+# distance_km beside log_distance and purchase_week beside purchase_month.
+# Ordinary least squares on that design matrix is rank-deficient and its
+# coefficients explode; keeping one representative of each quantity is what
+# makes a plain linear baseline meaningful at all.
+NUMERIC_FEATURES = [
+    "estimated_days",
+    "n_items", "n_sellers",
+    "log_price", "price_per_item",
+    "total_freight", "freight_ratio",
+    "log_weight", "max_volume_cm3", "total_photos",
+    "log_distance",
+    "max_installments",
+    "purchase_month", "purchase_dow", "purchase_hour",
 ]
 BOOLEAN_FEATURES = [
-    "is_holiday_week", "is_summer", "is_jan_slump", "is_tony_season",
-    "is_opening_month",
+    "is_weekend", "is_business_hours", "is_nov_peak",
+    "is_multi_seller", "same_state", "long_promise",
 ]
-CATEGORICAL_FEATURES = ["show_type", "theatre"]
+CATEGORICAL_FEATURES = [
+    "customer_state", "seller_region", "lead_category", "lead_payment_type",
+]
 
+# purchase_year is deliberately absent: the split is chronological, so the test
+# period contains a year the model never saw during training and a linear term
+# on it extrapolates blindly.
 
-def numeric_features(horizon: int = FORECAST_HORIZON_WEEKS) -> list[str]:
-    """Numeric predictors admissible when forecasting `horizon` weeks ahead.
+MODEL_FEATURES = NUMERIC_FEATURES + BOOLEAN_FEATURES + CATEGORICAL_FEATURES
 
-    Only weeks t-horizon and earlier are visible, so the lag block starts at
-    `horizon`, never at 1. Calling this with the wrong horizon is the easiest
-    way to leak, which is why the lag list is generated rather than hand-typed.
-    """
-    lags = [f"capacity_lag{i}" for i in range(horizon, horizon + 4)]
-    lags += [f"gp_lag{horizon}", f"gp_lag{horizon + 1}"]
-    rolls = [f"cap_h{horizon}_roll_mean", f"cap_h{horizon}_roll_std",
-             f"cap_h{horizon}_trend"]
-    return lags + rolls + HORIZON_FREE_NUMERIC
-
-
-def model_features(horizon: int = FORECAST_HORIZON_WEEKS) -> list[str]:
-    """Full predictor list (numeric + boolean + categorical) for a horizon."""
-    return numeric_features(horizon) + BOOLEAN_FEATURES + CATEGORICAL_FEATURES
-
-
-# Convenience aliases at the project's default horizon.
-NUMERIC_FEATURES = numeric_features()
-MODEL_FEATURES = model_features()
+# The at-delivery regime may additionally see how the delivery actually went.
+REVIEW_MODEL_FEATURES = MODEL_FEATURES + DELIVERY_OUTCOME_FEATURES
 
 
 # ---------------------------------------------------------------------------
 # Guards
 # ---------------------------------------------------------------------------
-def assert_no_leakage(feature_names) -> None:
-    """Refuse any feature set that contains a same-week outcome measure.
+def assert_no_leakage(feature_names, regime: str = "at_checkout") -> None:
+    """Refuse any feature set containing a column unavailable at `regime`.
 
-    Called by every modelling cell. See the module docstring for why capacity is
-    mechanically reconstructible from the forbidden columns.
+    `regime` is the moment the model would actually run - see the module
+    docstring. Passing the wrong regime is itself the mistake this guard exists
+    to catch, so an unknown name is an error rather than a silent pass.
     """
-    offenders = sorted(set(feature_names) & SAME_WEEK_FORBIDDEN)
+    if regime not in LEAKAGE_REGIMES:
+        raise KeyError(
+            f"Unknown leakage regime {regime!r}; expected one of "
+            f"{sorted(LEAKAGE_REGIMES)}"
+        )
+    offenders = sorted(set(feature_names) & LEAKAGE_REGIMES[regime])
     if offenders:
         raise ValueError(
-            "Same-week outcome columns cannot be used as predictors because "
-            "capacity_pct is an identity over them: " + ", ".join(offenders)
+            f"At {regime.replace('_', ' ')} these columns are not yet "
+            "observable, so they cannot be predictors: " + ", ".join(offenders)
         )
 
 
-def make_splits(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """Chronological split, then drop productions that straddle train and test.
+def make_splits(df: pd.DataFrame) -> dict[str, object]:
+    """Chronological split, then remove customers who straddle train and test.
 
-    Chronology alone is not enough: a production running from 2012 to 2016 would
-    place its own adjacent weeks in both train and test, so the test score would
-    partly measure memorisation of that specific run.
+    Chronology alone is not enough. 2,997 buyers placed more than one order, so
+    a purely time-based cut can still put one of their orders in training and
+    another in test; the model would then be graded partly on a person it has
+    already seen. This is the concrete form of the brief's customer_id versus
+    customer_unique_id warning.
     """
-    train = df[df["date"] <= TRAIN_END]
-    val = df[(df["date"] > TRAIN_END) & (df["date"] <= VAL_END)]
-    test = df[df["date"] > VAL_END]
+    ts = df["order_purchase_timestamp"]
+    train = df[ts <= TRAIN_END]
+    val = df[(ts > TRAIN_END) & (ts <= VAL_END)]
+    test = df[ts > VAL_END]
 
-    straddlers = set(train["production_id"]) & set(test["production_id"])
-    test_clean = test[~test["production_id"].isin(straddlers)]
+    straddlers = set(train["customer_unique_id"]) & set(test["customer_unique_id"])
+    test_clean = test[~test["customer_unique_id"].isin(straddlers)]
 
     return {
         "train": train,
         "val": val,
         "test": test,
-        "test_unseen_productions": test_clean,
-        "n_straddling_productions": len(straddlers),
+        "test_unseen_customers": test_clean,
+        "n_straddling_customers": len(straddlers),
     }

@@ -2,8 +2,8 @@
 Shared plotting style and figure export.
 
 Every figure in the report is produced through save_fig(), which writes vector
-PDF into report/figures/. LaTeX then includes the PDF directly, so the figures
-stay sharp at any zoom and the report never depends on a raster screenshot.
+PDF into report/figures/. LaTeX includes the PDF directly, so the figures stay
+sharp at any zoom and the report never depends on a raster screenshot.
 """
 from __future__ import annotations
 
@@ -50,24 +50,13 @@ def save_fig(fig, name: str) -> str:
     return str(path)
 
 
-def annotate_events(ax, events, y_frac: float = 0.96) -> None:
-    """Mark the real-world events that are visible in the weekly series.
+def money(ax, axis: str = "y") -> None:
+    """Format an axis as Brazilian reais."""
+    fmt = mpl.ticker.FuncFormatter(lambda v, _: f"R${v:,.0f}")
+    (ax.yaxis if axis == "y" else ax.xaxis).set_major_formatter(fmt)
 
-    Labels are staggered vertically because the 2007 strike and the 2008
-    financial crisis are only months apart and would otherwise overprint.
-    """
-    ymin, ymax = ax.get_ylim()
-    offsets = [0.0, 0.30, 0.60]
-    for i, (date, label) in enumerate(events):
-        y = ymin + (y_frac - offsets[i % len(offsets)]) * (ymax - ymin)
-        ax.axvline(date, color=PALETTE["accent"], linestyle="--", linewidth=0.9, alpha=0.8)
-        ax.annotate(
-            label,
-            xy=(date, y),
-            xytext=(3, 0),
-            textcoords="offset points",
-            fontsize=6.5,
-            color=PALETTE["accent"],
-            rotation=90,
-            va="top",
-        )
+
+def pct(ax, axis: str = "y") -> None:
+    """Format an axis as percentages."""
+    fmt = mpl.ticker.FuncFormatter(lambda v, _: f"{v:.0f}%")
+    (ax.yaxis if axis == "y" else ax.xaxis).set_major_formatter(fmt)
