@@ -91,8 +91,22 @@ S["pct_undelivered"] = round(100 - float(st["delivered"]), 1)
 S["pct_no_delivery_date"] = round(
     100 * full["order_delivered_customer_date"].isna().mean(), 2)
 
-# review coverage
-S["rows_reviews_distinct_orders"] = int(tables["order_reviews"]["order_id"].nunique())
+# review coverage and key integrity
+rev = tables["order_reviews"]
+S["rows_reviews_distinct_orders"] = int(rev["order_id"].nunique())
+S["n_distinct_review_ids"] = int(rev["review_id"].nunique())
+_rid = rev["review_id"].value_counts()
+S["n_reused_review_ids"] = int((_rid > 1).sum())
+_per_order = rev["order_id"].value_counts()
+S["n_orders_multi_review"] = int((_per_order > 1).sum())
+S["max_reviews_one_order"] = int(_per_order.max())
+S["n_orders_no_review"] = int(len(set(tables["orders"]["order_id"]) - set(rev["order_id"])))
+S["pct_review_title_present"] = round(100 * rev["review_comment_title"].notna().mean(), 1)
+S["pct_review_message_present"] = round(100 * rev["review_comment_message"].notna().mean(), 1)
+S["n_distinct_estimate_dates"] = int(tables["orders"]["order_estimated_delivery_date"].nunique())
+S["n_orders_no_payment"] = int(
+    len(set(tables["orders"]["order_id"]) - set(tables["order_payments"]["order_id"])))
+S["n_products_no_category"] = int(tables["products"]["product_category_name"].isna().sum())
 S["pct_orders_with_review"] = round(100 * df["review_score"].notna().mean(), 1)
 rs = tables["order_reviews"]["review_score"].value_counts(normalize=True) * 100
 S["pct_review_5"] = round(float(rs[5]), 1)
@@ -102,7 +116,7 @@ S["pct_review_1"] = round(float(rs[1]), 1)
 # geography
 cent = zip_centroids(tables["geolocation"])
 S["n_zip_prefixes"] = len(cent)
-S["median_distance_km"] = int(df["distance_km"].median())
+S["median_distance_km"] = round(float(df["distance_km"].median()))
 S["pct_same_state"] = round(100 * df["same_state"].mean(), 1)
 S["pct_sellers_sp"] = round(
     100 * (tables["sellers"]["seller_state"] == "SP").mean(), 1)

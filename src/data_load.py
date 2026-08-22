@@ -76,10 +76,41 @@ CLEANING_DECISIONS: dict[str, dict[str, str]] = {
                     "excluded from those models, never imputed.",
     },
     "review_duplicates": {
-        "issue": "A few orders carry more than one review record.",
-        "evidence": "99,224 review rows against 98,673 distinct order_id "
-                    "values.",
-        "decision": "Keep the earliest review per order by creation date.",
+        "issue": "review_id is not unique, and some orders carry more than one "
+                 "review. Neither column is the key it looks like.",
+        "evidence": "99,224 review rows hold only 98,410 distinct review_id "
+                    "values - 789 ids are reused across unrelated orders - and "
+                    "547 orders carry two or three reviews. A further 768 "
+                    "orders have no review row at all.",
+        "decision": "Key reviews on order_id, not review_id, and keep the "
+                    "earliest review per order by creation date. Orders without "
+                    "a review get NaN rather than an imputed score.",
+    },
+    "review_free_text": {
+        "issue": "The two free-text review columns are mostly empty, so any "
+                 "text-based feature would be defined for a minority of orders.",
+        "evidence": "review_comment_title is present for 11.7% of reviews and "
+                    "review_comment_message for 41.3%.",
+        "decision": "Use the numeric review_score only. No NLP features are "
+                    "engineered; the coverage does not support them.",
+    },
+    "estimate_granularity": {
+        "issue": "The promised delivery date is a date, but the actual delivery "
+                 "is a full timestamp, so the two are not measured alike.",
+        "evidence": "order_estimated_delivery_date takes 459 distinct values "
+                    "over 773 days and its time component is always midnight.",
+        "decision": "Treat lateness as delivery strictly after the promised "
+                    "date, and read delay_vs_estimate_days as accurate to about "
+                    "a day rather than to the hour.",
+    },
+    "orphan_payment": {
+        "issue": "One order has no payment record.",
+        "evidence": "order bfbd0f9bdef84302105ad712db648a6c (delivered, "
+                    "2016-09-15) appears in orders but not in order_payments.",
+        "decision": "Left as NaN by the left join. It falls outside the 2017+ "
+                    "analysis window and affects nothing, but the left join is "
+                    "deliberate so such gaps stay visible instead of dropping "
+                    "the order.",
     },
     "geolocation_duplicates": {
         "issue": "The geolocation table holds one row per captured coordinate, "

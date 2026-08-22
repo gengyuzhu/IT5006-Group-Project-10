@@ -362,7 +362,7 @@ with tab3:
     st.markdown(
         theme.note(
             "Distance is the strongest checkout-time signal",
-            "The median order travels <b>433 km</b> and only 35.7% stay inside the "
+            "The median order travels <b>434 km</b> and only 35.7% stay inside the "
             "customer's own state. Distance correlates with lead time at r = 0.40 — "
             "ahead of the platform's own delivery estimate (r = 0.38) — which is why "
             "it is the most valuable feature available before an order ships."
